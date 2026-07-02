@@ -52,9 +52,40 @@ UPLOAD_DIR = APP_DATA_DIR / "uploads"
 LEGACY_DB_PATH = BASE_DIR / "integrity_monitor.db"
 
 
+_storage_initialized = False
+_storage_lock = threading.Lock()
+
+
+def _hide_windows_path(path: Path) -> None:
+    """Set the Windows hidden attribute without spawning a console window.
+
+    The previous implementation used os.system("attrib +h ..."), which
+    launches cmd.exe. In a windowed (non-console) build that flashes a
+    visible console window every time it runs - and it was running on
+    every database connection, causing repeated window flicker.
+    """
+    if os.name != 'nt' or not path.exists():
+        return
+    try:
+        import ctypes
+        FILE_ATTRIBUTE_HIDDEN = 0x02
+        ctypes.windll.kernel32.SetFileAttributesW(str(path), FILE_ATTRIBUTE_HIDDEN)
+    except Exception:
+        pass
+
+
 def ensure_secure_storage() -> None:
+    global _storage_initialized
+
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Everything below (legacy migration + hiding attributes) only needs to
+    # happen once per process, not on every database connection.
+    with _storage_lock:
+        if _storage_initialized:
+            return
+        _storage_initialized = True
 
     if LEGACY_DB_PATH.exists() and not DB_PATH.exists():
         backup_path = DB_PATH.parent / "integrity_monitor.db.backup"
@@ -72,13 +103,9 @@ def ensure_secure_storage() -> None:
             except Exception:
                 pass
 
-    if os.name == 'nt':
-        try:
-            os.system(f'attrib +h "{DB_PATH.parent}"')
-            os.system(f'attrib +h "{DB_PATH}"')
-            os.system(f'attrib +h "{LEGACY_DB_PATH}"')
-        except Exception:
-            pass
+    _hide_windows_path(DB_PATH.parent)
+    _hide_windows_path(DB_PATH)
+    _hide_windows_path(LEGACY_DB_PATH)
 
 ensure_secure_storage()
 
@@ -89,7 +116,7 @@ PORT = int(os.environ.get('PORT', 5000))
 class Database:
     @staticmethod
     def get_connection():
-        ensure_secure_storage()
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.row_factory = sqlite3.Row
         return conn
