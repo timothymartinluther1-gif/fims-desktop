@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>File Integrity Monitor</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app-shell">
+
+  <!-- ===== HOME PANEL ===== -->
+  <section id="homePanel" class="home-panel">
+    <div class="home-shell">
+      <div class="home-hero">
+        <div class="home-brand-icon">🔐</div>
+        <p class="eyebrow">File Integrity Monitor</p>
+        <h1>Know the instant a file changes.</h1>
+        <div class="home-text">
+          <p>Track any file on this machine with SHA-256 hashing. Get alerted the moment something is modified, deleted, or restored.</p>
+        </div>
+        <div class="home-actions">
+          <button id="homeLoginBtn" class="home-action-btn">Log In</button>
+          <button id="homeRegisterBtn" class="home-secondary-btn">Create Account</button>
+        </div>
+      </div>
+
+      <div class="home-grid">
+        <div class="info-card">
+          <h3>📌 Add a File</h3>
+          <p>Upload a file or point to a path on disk to start monitoring it.</p>
+        </div>
+        <div class="info-card">
+          <h3>🧬 Hash Tracking</h3>
+          <p>Every check computes a SHA-256 hash and compares it to the trusted baseline.</p>
+        </div>
+        <div class="info-card">
+          <h3>🚨 Instant Alerts</h3>
+          <p>Tampering, deletion, or restoration is logged and surfaced immediately.</p>
+        </div>
+      </div>
+
+      <div class="wide-card">
+        <div class="home-steps">
+          <div><strong>1.</strong> Create an account</div>
+          <div><strong>2.</strong> Add files to monitor</div>
+          <div><strong>3.</strong> Watch the dashboard for alerts</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== AUTH PANEL ===== -->
+  <section id="authPanel" class="auth-panel hidden">
+    <div class="auth-card">
+      <button id="backHomeBtn" class="back-home-btn">&larr; Back</button>
+      <div class="brand">
+        <div class="brand-logo">🔐</div>
+        <div>
+          <strong>Integrity Monitor</strong>
+          <div class="brand-small">Secure file tracking</div>
+        </div>
+      </div>
+
+      <div class="auth-toggle">
+        <button class="toggle-btn active" data-form="login">Log In</button>
+        <button class="toggle-btn" data-form="register">Register</button>
+      </div>
+
+      <form id="loginForm" class="auth-form active">
+        <div class="field-group">
+          <label for="loginEmail">Email</label>
+          <input type="email" id="loginEmail" required autocomplete="email" />
+        </div>
+        <div class="field-group">
+          <label for="loginPassword">Password</label>
+          <input type="password" id="loginPassword" required autocomplete="current-password" />
+        </div>
+        <button type="submit" class="submit-btn">Log In</button>
+      </form>
+
+      <form id="registerForm" class="auth-form">
+        <div class="field-group">
+          <label for="registerName">Name</label>
+          <input type="text" id="registerName" required autocomplete="name" />
+        </div>
+        <div class="field-group">
+          <label for="registerEmail">Email</label>
+          <input type="email" id="registerEmail" required autocomplete="email" />
+        </div>
+        <div class="field-group">
+          <label for="registerPassword">Password</label>
+          <input type="password" id="registerPassword" required autocomplete="new-password" />
+        </div>
+        <button type="submit" class="submit-btn">Create Account</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ===== DASHBOARD PANEL ===== -->
+  <section id="dashboardPanel" class="dashboard-panel hidden">
+    <div class="top-bar">
+      <div class="brand">
+        <div class="brand-logo">🔐</div>
+        <div>
+          <strong>Integrity Monitor</strong>
+          <h3 id="greetingText">Welcome back</h3>
+        </div>
+      </div>
+      <div class="nav-links">
+        <span class="connection-pill">● Live</span>
+        <button id="refreshBtn" class="refresh-btn">Refresh</button>
+        <button id="logoutBtn" class="logout-btn">Log Out</button>
+      </div>
+    </div>
+
+    <div class="content-grid">
+      <aside class="sidebar">
+        <div class="panel-header"><h4>Add a file</h4></div>
+        <form id="uploadForm" class="upload-box">
+          <label for="fileInput">
+            <span>📁 Choose a file to upload</span>
+            <small>or leave blank and provide a path below</small>
+          </label>
+          <input type="file" id="fileInput" />
+          <div class="field-group">
+            <label for="filePathInput">...or monitor a file already on disk</label>
+            <input type="text" id="filePathInput" placeholder="C:\path\to\file.txt" />
+          </div>
+          <button type="submit" class="submit-btn">Start Monitoring</button>
+        </form>
+
+        <div class="stats-grid">
+          <div class="stat-card success-card">
+            <span>Safe</span>
+            <strong id="safeCount">0</strong>
+          </div>
+          <div class="stat-card warning-card">
+            <span>Tampered</span>
+            <strong id="tamperedCount">0</strong>
+          </div>
+          <div class="stat-card info-card">
+            <span>Alerts</span>
+            <strong id="alertCount">0</strong>
+          </div>
+          <div class="stat-card">
+            <span>Files</span>
+            <strong id="fileCount">0</strong>
+          </div>
+        </div>
+
+        <div id="selectedFileInfo" class="info-card" style="display:none;">
+          <div class="panel-header">
+            <h4 id="selectedFileName">File Name</h4>
+            <button id="clearSelectionBtn" class="ghost-btn">Clear</button>
+          </div>
+          <span id="selectedFileStatus" class="status-pill status-monitoring">monitoring</span>
+          <ul class="user-list">
+            <li>Hash 1: <code id="hash1">—</code> <small id="hash1Time">—</small></li>
+            <li>Hash 2: <code id="hash2">—</code> <small id="hash2Time">—</small></li>
+            <li>Hash 3: <code id="hash3">—</code> <small id="hash3Time">—</small></li>
+          </ul>
+          <button id="simulateBtn" class="ghost-btn">Simulate tampering</button>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <div class="table-panel">
+          <div class="table-header">
+            <h4>Monitored Files</h4>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>Hash</th>
+                  <th>Status</th>
+                  <th>Last Checked</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="fileTableBody">
+                <tr><td colspan="5" class="empty-row">No files uploaded yet</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="table-panel">
+          <div class="table-header"><h4>Recent Alerts</h4></div>
+          <ul id="alertList" class="alert-list">
+            <li class="empty-state">No alerts yet</li>
+          </ul>
+        </div>
+
+        <div class="table-panel user-panel hidden">
+          <div class="table-header"><h4>All Users (Admin)</h4></div>
+          <ul id="userList" class="user-list">
+            <li class="empty-state">No users found</li>
+          </ul>
+        </div>
+      </main>
+    </div>
+  </section>
+
+</div>
+<script src="/script.js"></script>
+</body>
+</html>

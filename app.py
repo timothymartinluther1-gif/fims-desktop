@@ -1,0 +1,813 @@
+import hashlib
+import os
+import shutil
+import sqlite3
+import sys
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+from flask import Flask, jsonify, request, send_from_directory, render_template_string # type: ignore
+from flask_cors import CORS # type: ignore
+
+
+def resource_path() -> Path:
+    """Directory containing bundled read-only assets (index.html, script.js, style.css).
+
+    When run from source this is the app.py folder. When packaged with
+    PyInstaller (onefile build) it is the temporary extraction folder
+    (sys._MEIPASS), which is read-only and wiped between runs.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parent
+
+
+def app_data_dir() -> Path:
+    """Writable per-user directory for the database and monitored uploads.
+
+    Never write inside the install/bundle folder: on Windows that is
+    typically Program Files (read-only for standard users) and, when
+    frozen, is a temp extraction folder that doesn't persist anyway.
+    """
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    data_dir = base / "IntegrityMonitor"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+
+
+RESOURCE_DIR = resource_path()
+APP_DATA_DIR = app_data_dir()
+
+app = Flask(__name__, static_folder=str(RESOURCE_DIR), static_url_path='')
+CORS(app)
+
+BASE_DIR = RESOURCE_DIR
+DB_PATH = APP_DATA_DIR / "integrity_monitor.db"
+UPLOAD_DIR = APP_DATA_DIR / "uploads"
+LEGACY_DB_PATH = BASE_DIR / "integrity_monitor.db"
+
+
+def ensure_secure_storage() -> None:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    if LEGACY_DB_PATH.exists() and not DB_PATH.exists():
+        backup_path = DB_PATH.parent / "integrity_monitor.db.backup"
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(LEGACY_DB_PATH, backup_path)
+        except Exception:
+            pass
+        try:
+            os.replace(LEGACY_DB_PATH, DB_PATH)
+        except PermissionError:
+            try:
+                shutil.copy2(LEGACY_DB_PATH, DB_PATH)
+                LEGACY_DB_PATH.unlink()
+            except Exception:
+                pass
+
+    if os.name == 'nt':
+        try:
+            os.system(f'attrib +h "{DB_PATH.parent}"')
+            os.system(f'attrib +h "{DB_PATH}"')
+            os.system(f'attrib +h "{LEGACY_DB_PATH}"')
+        except Exception:
+            pass
+
+ensure_secure_storage()
+
+HOST = os.environ.get('HOST', '127.0.0.1')
+PORT = int(os.environ.get('PORT', 5000))
+
+
+class Database:
+    @staticmethod
+    def get_connection():
+        ensure_secure_storage()
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+
+def migrate_schema(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+
+    users_cols = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
+    if "name" not in users_cols:
+        if "username" in users_cols:
+            cursor.execute("ALTER TABLE users RENAME COLUMN username TO name")
+        else:
+            cursor.execute("ALTER TABLE users ADD COLUMN name TEXT")
+    if "salt" not in users_cols:
+        cursor.execute("ALTER TABLE users ADD COLUMN salt TEXT NOT NULL DEFAULT ''")
+    files_cols = {row[1] for row in cursor.execute("PRAGMA table_info(files)").fetchall()}
+    if "name" not in files_cols:
+        if "file_name" in files_cols:
+            cursor.execute("ALTER TABLE files RENAME COLUMN file_name TO name")
+        else:
+            cursor.execute("ALTER TABLE files ADD COLUMN name TEXT")
+    if "path" not in files_cols:
+        if "file_path" in files_cols:
+            cursor.execute("ALTER TABLE files RENAME COLUMN file_path TO path")
+        else:
+            cursor.execute("ALTER TABLE files ADD COLUMN path TEXT")
+    if "trusted_hash" not in files_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN trusted_hash TEXT")
+    if "current_hash" not in files_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN current_hash TEXT")
+    if "status" not in files_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN status TEXT DEFAULT 'monitoring'")
+    if "last_checked" not in files_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN last_checked TEXT")
+    if "created_at" not in files_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN created_at TEXT")
+    if "uploaded_at" not in files_cols:
+        cursor.execute("ALTER TABLE files ADD COLUMN uploaded_at TEXT")
+
+    alerts_cols = {row[1] for row in cursor.execute("PRAGMA table_info(alerts)").fetchall()}
+    if "old_hash" in alerts_cols or "alert_time" in alerts_cols or "previous_hash" not in alerts_cols or "timestamp" not in alerts_cols:
+        # A previous run may have crashed mid-migration and left a stale
+        # alerts_old table behind; clear it so the rename below can't collide.
+        cursor.execute("DROP TABLE IF EXISTS alerts_old")
+        cursor.execute("ALTER TABLE alerts RENAME TO alerts_old")
+
+        # Don't assume the legacy table has any particular columns (older
+        # schema versions varied) - only select ones that actually exist,
+        # and default the rest. Referencing a missing column directly in
+        # SQL raises OperationalError, which used to crash every request.
+        legacy_cols = {row[1] for row in cursor.execute("PRAGMA table_info(alerts_old)").fetchall()}
+
+        def col_or_default(name: str, default_sql: str) -> str:
+            return name if name in legacy_cols else default_sql
+
+        user_id_expr = col_or_default("user_id", "0")
+        file_id_expr = col_or_default("file_id", "0")
+        file_name_expr = col_or_default("file_name", "''")
+        resolved_expr = col_or_default("resolved", "0")
+
+        previous_hash_parts = [c for c in ("previous_hash", "old_hash") if c in legacy_cols]
+        previous_hash_expr = f"COALESCE({', '.join(previous_hash_parts)}, '')" if previous_hash_parts else "''"
+
+        new_hash_expr = "COALESCE(new_hash, '')" if "new_hash" in legacy_cols else "''"
+
+        timestamp_parts = [c for c in ("timestamp", "alert_time") if c in legacy_cols]
+        timestamp_expr = f"COALESCE({', '.join(timestamp_parts)}, '')" if timestamp_parts else "''"
+
+        cursor.execute(
+            """
+            CREATE TABLE alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                file_id INTEGER NOT NULL,
+                file_name TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                new_hash TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                resolved INTEGER DEFAULT 0,
+                FOREIGN KEY(user_id) REFERENCES users(id),
+                FOREIGN KEY(file_id) REFERENCES files(id)
+            )
+            """
+        )
+        cursor.execute(
+            f"""
+            INSERT INTO alerts (id, user_id, file_id, file_name, previous_hash, new_hash, timestamp, resolved)
+            SELECT
+                id,
+                {user_id_expr},
+                {file_id_expr},
+                {file_name_expr},
+                {previous_hash_expr},
+                {new_hash_expr},
+                {timestamp_expr},
+                {resolved_expr}
+            FROM alerts_old
+            """
+        )
+        cursor.execute("DROP TABLE alerts_old")
+
+    cursor.execute("UPDATE files SET current_hash = trusted_hash WHERE current_hash IS NULL AND trusted_hash IS NOT NULL")
+    conn.commit()
+
+
+def init_db():
+    ensure_secure_storage()
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+
+    cursor.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            trusted_hash TEXT NOT NULL,
+            current_hash TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'monitoring',
+            last_checked TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            uploaded_at TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS hash_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_id INTEGER NOT NULL,
+            hash_value TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            change_type TEXT NOT NULL,  -- 'initial', 'modified', 'restored'
+            FOREIGN KEY(file_id) REFERENCES files(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            file_id INTEGER NOT NULL,
+            file_name TEXT NOT NULL,
+            previous_hash TEXT NOT NULL,
+            new_hash TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            resolved INTEGER DEFAULT 0,
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(file_id) REFERENCES files(id)
+        );
+        """
+    )
+    migrate_schema(conn)
+    conn.commit()
+    conn.close()
+
+
+def hash_password(password: str, salt: str) -> str:
+    return hashlib.sha256(f"{salt}:{password}".encode("utf-8")).hexdigest()
+
+
+def generate_salt() -> str:
+    return hashlib.sha256(os.urandom(32)).hexdigest()
+
+
+def compute_hash(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return dict(row)
+
+
+@app.before_request
+def ensure_db():
+    init_db()
+
+
+# ===== SERVE FRONTEND =====
+@app.route('/')
+def index():
+    """Serve the main HTML page"""
+    try:
+        with open(RESOURCE_DIR / 'index.html', 'r', encoding='utf-8') as f:
+            return render_template_string(f.read())
+    except FileNotFoundError:
+        return jsonify({
+            "success": False,
+            "message": "index.html not found. Please ensure the file exists."
+        }), 404
+
+
+@app.route('/<path:path>')
+def serve_static(path):
+    """Serve static files (CSS, JS, etc.)"""
+    try:
+        return send_from_directory(RESOURCE_DIR, path)
+    except FileNotFoundError:
+        return jsonify({
+            "success": False,
+            "message": f"File {path} not found."
+        }), 404
+
+
+# ===== API ENDPOINTS =====
+
+@app.route('/api/health', methods=['GET'])
+def health():
+    return jsonify({
+        "success": True,
+        "message": "Backend is healthy.",
+        "server_time": now_iso()
+    })
+
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json(silent=True) or {}
+    name = (data.get('name') or '').strip()
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+
+    if not name or not email or not password:
+        return jsonify({"success": False, "message": "All fields are required."}), 400
+
+    salt = generate_salt()
+    password_hash = hash_password(password, salt)
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO users (name, email, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?)",
+            (name, email, f"{salt}:{password_hash}", salt, now_iso()),
+        )
+        conn.commit()
+        user_id = cursor.lastrowid
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({"success": False, "message": "Email already exists."}), 409
+    finally:
+        conn.close()
+
+    return jsonify({
+        "success": True,
+        "message": "User registered successfully.",
+        "user": {
+            "id": user_id,
+            "name": name,
+            "email": email,
+        },
+    })
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+
+    if not email or not password:
+        return jsonify({"success": False, "message": "Email and password are required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
+    user = cursor.fetchone()
+    conn.close()
+
+    if not user:
+        return jsonify({"success": False, "message": "Invalid credentials."}), 401
+
+    stored_value = user["password_hash"]
+    salt, stored_hash = stored_value.split(':', 1)
+    incoming_hash = hash_password(password, salt)
+
+    if incoming_hash != stored_hash:
+        return jsonify({"success": False, "message": "Invalid credentials."}), 401
+
+    return jsonify({
+        "success": True,
+        "message": "Login successful.",
+        "user": {
+            "id": user["id"],
+            "name": user["name"],
+            "email": user["email"],
+        },
+    })
+
+
+@app.route('/api/files', methods=['GET'])
+def get_files():
+    user_id = request.args.get('user_id', type=int)
+    if user_id is None:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM files WHERE user_id = ? ORDER BY id DESC",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "files": [row_to_dict(row) for row in rows],
+    })
+
+
+@app.route('/api/files', methods=['POST'])
+def upload_file():
+    user_id = request.form.get('user_id', type=int)
+    file_path = (request.form.get('file_path') or '').strip()
+    uploaded_file = request.files.get('file')
+
+    if user_id is None:
+        return jsonify({"success": False, "message": "User id is required."}), 400
+
+    file_bytes = None
+    monitored_path = None
+    display_name = None
+
+    if uploaded_file and uploaded_file.filename:
+        try:
+            file_bytes = uploaded_file.read()
+        except Exception as exc:
+            return jsonify({"success": False, "message": f"Unable to read uploaded file: {exc}"}), 400
+
+        display_name = uploaded_file.filename or "uploaded_file"
+        safe_name = display_name.replace('..', '_').replace('/', '_').replace('\\', '_')
+        user_upload_dir = UPLOAD_DIR / f"user_{user_id}"
+        user_upload_dir.mkdir(parents=True, exist_ok=True)
+        monitored_path = user_upload_dir / f"{int(time.time())}_{safe_name}"
+        monitored_path.write_bytes(file_bytes)
+    elif file_path:
+        try:
+            monitored_path = Path(file_path).expanduser().resolve()
+        except Exception:
+            return jsonify({"success": False, "message": "Invalid file path provided."}), 400
+
+        if not monitored_path.exists() or not monitored_path.is_file():
+            return jsonify({"success": False, "message": "The monitored file path does not exist or is not a file."}), 400
+
+        try:
+            file_bytes = monitored_path.read_bytes()
+        except OSError as exc:
+            return jsonify({"success": False, "message": f"Unable to read the selected file: {exc}"}), 400
+
+        display_name = monitored_path.name
+    else:
+        return jsonify({"success": False, "message": "A file path or uploaded file is required for live monitoring."}), 400
+
+    if file_bytes is None:
+        return jsonify({"success": False, "message": "Unable to read the selected file."}), 400
+
+    file_hash = compute_hash(file_bytes)
+    timestamp = now_iso()
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO files (user_id, name, path, trusted_hash, current_hash, status, last_checked, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (user_id, display_name, str(monitored_path), file_hash, file_hash, 'monitoring', timestamp, timestamp),
+    )
+    conn.commit()
+    file_id = cursor.lastrowid
+
+    cursor.execute(
+        "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
+        (file_id, file_hash, timestamp, 'initial'),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "message": "File is now being monitored successfully.",
+        "file": {
+            "id": file_id,
+            "user_id": user_id,
+            "name": display_name,
+            "path": str(monitored_path),
+            "trusted_hash": file_hash,
+            "current_hash": file_hash,
+            "status": 'monitoring',
+            "last_checked": timestamp,
+        },
+    })
+
+
+@app.route('/api/files/<int:file_id>/history', methods=['GET'])
+def get_file_history(file_id):
+    """Get hash history for a specific file (last 3 hashes)"""
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT hash_value, timestamp, change_type FROM hash_history WHERE file_id = ? ORDER BY id DESC LIMIT 3",
+        (file_id,),
+    )
+    history = cursor.fetchall()
+    conn.close()
+    
+    # Get file info
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, name, status FROM files WHERE id = ?", (file_id,))
+    file_info = cursor.fetchone()
+    conn.close()
+    
+    return jsonify({
+        "success": True,
+        "file": dict(file_info) if file_info else None,
+        "history": [dict(h) for h in history]
+    })
+
+
+@app.route('/api/files/<int:file_id>', methods=['DELETE'])
+def delete_file(file_id):
+    """Delete a file and its associated data"""
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    file = cursor.fetchone()
+    
+    if not file:
+        conn.close()
+        return jsonify({"success": False, "message": "File not found."}), 404
+    
+    # Keep the original file on disk and only remove monitoring records for this user entry.
+    # This ensures the app watches the live file in place without duplicating or deleting it.
+    
+    # Delete all related data
+    cursor.execute("DELETE FROM hash_history WHERE file_id = ?", (file_id,))
+    cursor.execute("DELETE FROM alerts WHERE file_id = ?", (file_id,))
+    cursor.execute("DELETE FROM files WHERE id = ?", (file_id,))
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        "success": True,
+        "message": "File and associated data deleted successfully."
+    })
+
+
+@app.route('/api/alerts', methods=['GET'])
+def get_alerts():
+    user_id = request.args.get('user_id', type=int)
+    if user_id is None:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM alerts WHERE user_id = ? ORDER BY id DESC LIMIT 50",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    alerts = []
+    for row in rows:
+        alert_dict = row_to_dict(row)
+        alert_dict['resolved'] = bool(alert_dict.get('resolved', 0))
+        alerts.append(alert_dict)
+
+    return jsonify({
+        "success": True,
+        "alerts": alerts,
+    })
+
+
+@app.route('/api/alerts/<int:alert_id>/resolve', methods=['POST'])
+def resolve_alert(alert_id):
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE alerts SET resolved = 1 WHERE id = ?",
+        (alert_id,)
+    )
+    if cursor.rowcount == 0:
+        conn.close()
+        return jsonify({"success": False, "message": "Alert not found."}), 404
+    
+    conn.commit()
+    conn.close()
+    
+    return jsonify({
+        "success": True,
+        "message": "Alert resolved successfully."
+    })
+
+
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    user_id = request.args.get('user_id', type=int)
+    if user_id is None:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, name, trusted_hash, current_hash, status, last_checked FROM files WHERE user_id = ?",
+        (user_id,),
+    )
+    files = cursor.fetchall()
+    cursor.execute(
+        "SELECT COUNT(*) AS count FROM alerts WHERE user_id = ?",
+        (user_id,),
+    )
+    alert_count = cursor.fetchone()["count"]
+    conn.close()
+
+    safe_files = sum(1 for file in files if file["status"] in ('monitoring', 'safe'))
+    tampered_files = sum(1 for file in files if file["status"] == 'tampered')
+
+    return jsonify({
+        "success": True,
+        "stats": {
+            "files": len(files),
+            "alerts": alert_count,
+            "safe_files": safe_files,
+            "tampered_files": tampered_files,
+        },
+    })
+
+
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    user_id = request.args.get('user_id', type=int)
+    if user_id is None:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, email FROM users WHERE id = ?", (user_id,))
+    requester = cursor.fetchone()
+
+    if not requester:
+        conn.close()
+        return jsonify({"success": False, "message": "User not found."}), 404
+
+    if requester["email"] != "timothymartinluther54@gmail.com":
+        conn.close()
+        return jsonify({"success": False, "message": "Access denied."}), 403
+
+    cursor.execute("SELECT id, name, email, created_at FROM users ORDER BY id ASC")
+    rows = cursor.fetchall()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "users": [row_to_dict(row) for row in rows],
+    })
+
+
+@app.route('/api/simulate/<int:file_id>', methods=['POST'])
+def simulate_change(file_id):
+    """Simulate file tampering by appending text"""
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    file = cursor.fetchone()
+    conn.close()
+    
+    if not file:
+        return jsonify({"success": False, "message": "File not found."}), 404
+    
+    if not os.path.exists(file["path"]):
+        return jsonify({"success": False, "message": "File does not exist on disk."}), 400
+    
+    try:
+        with open(file["path"], 'a', encoding='utf-8') as f:
+            f.write(f"\n# Tamper simulation at {now_iso()}\n")
+    except Exception as e:
+        return jsonify({"success": False, "message": f"Failed to modify file: {str(e)}"}), 500
+    
+    return jsonify({
+        "success": True,
+        "message": "File modified for testing. Monitoring will detect changes."
+    })
+
+
+monitor_lock = threading.Lock()
+monitor_running = False
+
+
+def monitor_files():
+    global monitor_running
+    while True:
+        with monitor_lock:
+            if not monitor_running:
+                break
+        try:
+            conn = Database.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, user_id, name, path, trusted_hash, current_hash, status FROM files")
+            files = cursor.fetchall()
+
+            for file in files:
+                try:
+                    with open(file["path"], 'rb') as f:
+                        current_bytes = f.read()
+                    current_hash = compute_hash(current_bytes)
+                except FileNotFoundError:
+                    if file["status"] != 'tampered':
+                        cursor.execute(
+                            "UPDATE files SET status = 'tampered', last_checked = ? WHERE id = ?",
+                            (now_iso(), file["id"]),
+                        )
+                        cursor.execute(
+                            "INSERT INTO alerts (user_id, file_id, file_name, previous_hash, new_hash, timestamp, resolved) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (file["user_id"], file["id"], file["name"], file["trusted_hash"], "FILE_MISSING", now_iso(), 0),
+                        )
+                        # Add to history
+                        cursor.execute(
+                            "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
+                            (file["id"], "FILE_MISSING", now_iso(), 'modified'),
+                        )
+                        # Keep only last 3 history entries
+                        cursor.execute(
+                            "DELETE FROM hash_history WHERE id NOT IN (SELECT id FROM hash_history WHERE file_id = ? ORDER BY id DESC LIMIT 3)",
+                            (file["id"],)
+                        )
+                    continue
+
+                if current_hash != file["trusted_hash"] and file["status"] != 'tampered':
+                    # File has been tampered
+                    cursor.execute(
+                        "UPDATE files SET current_hash = ?, status = 'tampered', last_checked = ? WHERE id = ?",
+                        (current_hash, now_iso(), file["id"]),
+                    )
+                    cursor.execute(
+                        "INSERT INTO alerts (user_id, file_id, file_name, previous_hash, new_hash, timestamp, resolved) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (file["user_id"], file["id"], file["name"], file["trusted_hash"], current_hash, now_iso(), 0),
+                    )
+                    # Add new hash to history
+                    cursor.execute(
+                        "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
+                        (file["id"], current_hash, now_iso(), 'modified'),
+                    )
+                    # Keep only last 3 history entries
+                    cursor.execute(
+                        "DELETE FROM hash_history WHERE id NOT IN (SELECT id FROM hash_history WHERE file_id = ? ORDER BY id DESC LIMIT 3)",
+                        (file["id"],)
+                    )
+                elif current_hash == file["trusted_hash"] and file["status"] == 'tampered':
+                    # File was restored to original
+                    cursor.execute(
+                        "UPDATE files SET current_hash = ?, status = 'monitoring', last_checked = ? WHERE id = ?",
+                        (current_hash, now_iso(), file["id"]),
+                    )
+                    # Add restored hash to history
+                    cursor.execute(
+                        "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
+                        (file["id"], current_hash, now_iso(), 'restored'),
+                    )
+                    # Keep only last 3 history entries
+                    cursor.execute(
+                        "DELETE FROM hash_history WHERE id NOT IN (SELECT id FROM hash_history WHERE file_id = ? ORDER BY id DESC LIMIT 3)",
+                        (file["id"],)
+                    )
+                else:
+                    cursor.execute(
+                        "UPDATE files SET current_hash = ?, last_checked = ? WHERE id = ?",
+                        (current_hash, now_iso(), file["id"]),
+                    )
+
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Monitor error: {e}")
+        time.sleep(3)
+
+
+@app.route('/api/monitor/start', methods=['POST'])
+def start_monitor():
+    global monitor_running
+    with monitor_lock:
+        if not monitor_running:
+            monitor_running = True
+            thread = threading.Thread(target=monitor_files, daemon=True)
+            thread.start()
+            return jsonify({"success": True, "message": "Monitoring started."})
+    return jsonify({"success": True, "message": "Monitoring already running."})
+
+
+@app.route('/api/monitor/stop', methods=['POST'])
+def stop_monitor():
+    global monitor_running
+    with monitor_lock:
+        monitor_running = False
+    return jsonify({"success": True, "message": "Monitoring stopped."})
+
+
+if __name__ == '__main__':
+    init_db()
+    with monitor_lock:
+        if not monitor_running:
+            monitor_running = True
+            thread = threading.Thread(target=monitor_files, daemon=True)
+            thread.start()
+    print("🔐 File Integrity Monitor API Server")
+    print(f"📁 Database: {DB_PATH}")
+    print(f"📁 Uploads: {UPLOAD_DIR}")
+    print("🌐 Server running on http://0.0.0.0:5000")
+    print("📡 Access from any device on your network using your IP address")
+    app.run(debug=False, host=HOST, port=PORT, threaded=True)
