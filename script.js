@@ -30,6 +30,9 @@ const homeRegisterBtn = document.getElementById('homeRegisterBtn');
 const backHomeBtn = document.getElementById('backHomeBtn');
 const uploadForm = document.getElementById('uploadForm');
 const fileInput = document.getElementById('fileInput');
+const filePathInput = document.getElementById('filePathInput');
+const browseBtn = document.getElementById('browseBtn');
+const browseHint = document.getElementById('browseHint');
 const fileTableBody = document.getElementById('fileTableBody');
 const alertList = document.getElementById('alertList');
 const userPanel = document.querySelector('.user-panel');
@@ -437,8 +440,10 @@ function renderDashboard() {
         </td>
         <td>${formatTime(file.last_checked)}</td>
         <td>
-          <button class="ghost-btn" style="margin-right: 6px; padding: 6px 12px; font-size: 0.8rem;" onclick="event.stopPropagation(); simulateChange(${file.id})">Simulate</button>
-          <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="event.stopPropagation(); deleteFile(${file.id})">Delete</button>
+          <div class="row-actions">
+            <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem;" onclick="event.stopPropagation(); simulateChange(${file.id})">Simulate</button>
+            <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="event.stopPropagation(); deleteFile(${file.id})">Delete</button>
+          </div>
         </td>
       `;
       fileTableBody.appendChild(row);
@@ -461,8 +466,8 @@ function renderDashboard() {
         margin-bottom: 8px;
       `;
       item.innerHTML = `
-        <div style="display: flex; justify-content: space-between; align-items: start; gap: 10px;">
-          <div style="flex: 1;">
+        <div class="row-actions" style="justify-content: space-between; align-items: start; gap: 10px;">
+          <div style="flex: 1; min-width: 140px;">
             <strong style="color: var(--text);">${alert.file_name}</strong>
             <div style="color: var(--muted); font-size: 0.85rem; margin-top: 4px;">
               ${isResolved ? '✅ Resolved' : '⚠️ Tampered'} at ${formatTime(alert.timestamp)}
@@ -592,20 +597,54 @@ toggleButtons.forEach((btn) => {
 // File monitoring setup
 uploadForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const filePath = document.getElementById('filePathInput').value.trim();
+  const filePath = filePathInput.value.trim();
   const selectedFile = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
 
-  if (selectedFile) {
-    await processFileUpload('', selectedFile);
-  } else if (filePath) {
+  if (filePath) {
     await processFileUpload(filePath, null);
+  } else if (selectedFile) {
+    await processFileUpload('', selectedFile);
   } else {
-    showToast('Please upload a file or enter a file path to monitor', 'error');
+    showToast('Please choose a file to monitor', 'error');
   }
 
-  document.getElementById('filePathInput').value = '';
+  filePathInput.value = '';
   fileInput.value = '';
 });
+
+// Native OS file picker (pywebview) - returns the real absolute path,
+// which is required for live tamper detection of the original file.
+let pywebviewReady = false;
+window.addEventListener('pywebviewready', () => {
+  pywebviewReady = true;
+  browseHint.classList.add('hidden');
+});
+
+if (browseBtn) {
+  browseBtn.addEventListener('click', async () => {
+    if (!pywebviewReady || !window.pywebview || !window.pywebview.api) {
+      browseHint.classList.remove('hidden');
+      return;
+    }
+    try {
+      const path = await window.pywebview.api.pick_file();
+      if (path) {
+        filePathInput.value = path;
+        fileInput.value = '';
+      }
+    } catch (error) {
+      console.error('Native file picker failed:', error);
+      browseHint.classList.remove('hidden');
+    }
+  });
+
+  // If pywebview hasn't announced readiness shortly after load, assume
+  // we're running in a plain browser (e.g. `python app.py` fallback mode)
+  // and show the hint so the user knows to type the path manually.
+  setTimeout(() => {
+    if (!pywebviewReady) browseHint.classList.remove('hidden');
+  }, 1500);
+}
 
 // Home page navigation
 if (homeLoginBtn) {

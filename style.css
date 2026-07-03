@@ -439,9 +439,23 @@ button {
 /* ===== Dashboard Panel ===== */
 .dashboard-panel {
   display: flex;
+  flex-direction: column;
   min-height: 100vh;
   padding: 16px;
   gap: 16px;
+}
+
+/* ===== Two-column dashboard layout ===== */
+.left-column,
+.right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0; /* allow children to shrink instead of overflowing */
+}
+
+.right-column {
+  width: 100%;
 }
 
 /* ===== Sidebar - Warm & Natural ===== */
@@ -585,7 +599,7 @@ button {
 /* ===== Stats Grid ===== */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 16px;
 }
 
@@ -688,6 +702,54 @@ button {
   margin-top: 4px;
 }
 
+/* ===== Path-based monitoring (native browse) ===== */
+.path-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.path-row input[type="text"] {
+  flex: 1;
+  min-width: 160px;
+}
+
+.field-hint {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin-top: 6px;
+}
+
+.upload-fallback {
+  margin: 16px 0;
+  border: 1px dashed var(--border-medium);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+
+.upload-fallback summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.upload-fallback[open] summary {
+  margin-bottom: 12px;
+}
+
+.upload-fallback .upload-box {
+  padding: 24px 16px;
+}
+
+/* ===== Action button rows (file table, alerts) ===== */
+.row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 /* ===== Alert List ===== */
 .alert-list,
 .user-list {
@@ -712,8 +774,8 @@ button {
 
 .alert-list li:hover,
 .user-list li:hover {
-  transform: translateX(4px);
   border-color: var(--accent-1);
+  box-shadow: var(--shadow-soft);
 }
 
 .empty-state {
@@ -731,7 +793,11 @@ button {
 
 /* ===== Table Panel ===== */
 .table-panel {
-  overflow: hidden;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-soft);
+  padding: 24px;
+  box-shadow: var(--shadow-soft);
 }
 
 .table-header {

@@ -51,6 +51,25 @@ def start_backend(host: str, port: int) -> None:
     backend.app.run(host=host, port=port, debug=False, threaded=True, use_reloader=False)
 
 
+class Api:
+    """Exposed to the frontend as window.pywebview.api.
+
+    create_file_dialog is pywebview's native OS file picker. Unlike an
+    HTML <input type="file">, it returns the real absolute path on disk -
+    which is what lets the backend monitor the user's actual file in
+    place instead of a private copy.
+    """
+
+    def pick_file(self):
+        try:
+            result = webview.windows[0].create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False)
+        except Exception:
+            return None
+        if not result:
+            return None
+        return result[0]
+
+
 def main() -> None:
     host = "127.0.0.1"
     port = find_free_port(5000)
@@ -67,6 +86,7 @@ def main() -> None:
         width=1280,
         height=860,
         min_size=(960, 640),
+        js_api=Api(),
     )
     webview.start()
 

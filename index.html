@@ -115,56 +115,7 @@
     </div>
 
     <div class="content-grid">
-      <aside class="sidebar">
-        <div class="panel-header"><h4>Add a file</h4></div>
-        <form id="uploadForm" class="upload-box">
-          <label for="fileInput">
-            <span>📁 Choose a file to upload</span>
-            <small>or leave blank and provide a path below</small>
-          </label>
-          <input type="file" id="fileInput" />
-          <div class="field-group">
-            <label for="filePathInput">...or monitor a file already on disk</label>
-            <input type="text" id="filePathInput" placeholder="C:\path\to\file.txt" />
-          </div>
-          <button type="submit" class="submit-btn">Start Monitoring</button>
-        </form>
-
-        <div class="stats-grid">
-          <div class="stat-card success-card">
-            <span>Safe</span>
-            <strong id="safeCount">0</strong>
-          </div>
-          <div class="stat-card warning-card">
-            <span>Tampered</span>
-            <strong id="tamperedCount">0</strong>
-          </div>
-          <div class="stat-card info-card">
-            <span>Alerts</span>
-            <strong id="alertCount">0</strong>
-          </div>
-          <div class="stat-card">
-            <span>Files</span>
-            <strong id="fileCount">0</strong>
-          </div>
-        </div>
-
-        <div id="selectedFileInfo" class="info-card" style="display:none;">
-          <div class="panel-header">
-            <h4 id="selectedFileName">File Name</h4>
-            <button id="clearSelectionBtn" class="ghost-btn">Clear</button>
-          </div>
-          <span id="selectedFileStatus" class="status-pill status-monitoring">monitoring</span>
-          <ul class="user-list">
-            <li>Hash 1: <code id="hash1">—</code> <small id="hash1Time">—</small></li>
-            <li>Hash 2: <code id="hash2">—</code> <small id="hash2Time">—</small></li>
-            <li>Hash 3: <code id="hash3">—</code> <small id="hash3Time">—</small></li>
-          </ul>
-          <button id="simulateBtn" class="ghost-btn">Simulate tampering</button>
-        </div>
-      </aside>
-
-      <main class="main-content">
+      <div class="left-column">
         <div class="table-panel">
           <div class="table-header">
             <h4>Monitored Files</h4>
@@ -187,20 +138,80 @@
           </div>
         </div>
 
-        <div class="table-panel">
-          <div class="table-header"><h4>Recent Alerts</h4></div>
-          <ul id="alertList" class="alert-list">
-            <li class="empty-state">No alerts yet</li>
-          </ul>
-        </div>
-
         <div class="table-panel user-panel hidden">
           <div class="table-header"><h4>All Users (Admin)</h4></div>
           <ul id="userList" class="user-list">
             <li class="empty-state">No users found</li>
           </ul>
         </div>
-      </main>
+      </div>
+
+      <aside class="right-column">
+        <div class="panel upload-panel">
+          <div class="panel-header"><h4>Add a file</h4></div>
+          <form id="uploadForm">
+            <div class="field-group">
+              <label for="filePathInput">File to monitor (live — detects real edits/moves)</label>
+              <div class="path-row">
+                <input type="text" id="filePathInput" placeholder="C:\path\to\file.txt" />
+                <button type="button" id="browseBtn" class="ghost-btn">Browse…</button>
+              </div>
+              <small id="browseHint" class="field-hint hidden">Native browse isn't available in this view — type or paste the full path instead.</small>
+            </div>
+
+            <details class="upload-fallback">
+              <summary>Or upload a copy instead (works without desktop access, but won't detect edits to your original file)</summary>
+              <label for="fileInput" class="upload-box">
+                <span>📁 Choose a file to upload</span>
+                <small>A private copy will be monitored, not your original</small>
+              </label>
+              <input type="file" id="fileInput" />
+            </details>
+
+            <button type="submit" class="submit-btn">Start Monitoring</button>
+          </form>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card success-card">
+            <span>Safe</span>
+            <strong id="safeCount">0</strong>
+          </div>
+          <div class="stat-card warning-card">
+            <span>Tampered</span>
+            <strong id="tamperedCount">0</strong>
+          </div>
+          <div class="stat-card info-card">
+            <span>Alerts</span>
+            <strong id="alertCount">0</strong>
+          </div>
+          <div class="stat-card">
+            <span>Files</span>
+            <strong id="fileCount">0</strong>
+          </div>
+        </div>
+
+        <div id="selectedFileInfo" class="panel" style="display:none;">
+          <div class="panel-header">
+            <h4 id="selectedFileName">File Name</h4>
+            <button id="clearSelectionBtn" class="ghost-btn">Clear</button>
+          </div>
+          <span id="selectedFileStatus" class="status-pill status-monitoring">monitoring</span>
+          <ul class="user-list">
+            <li>Hash 1: <code id="hash1">—</code> <small id="hash1Time">—</small></li>
+            <li>Hash 2: <code id="hash2">—</code> <small id="hash2Time">—</small></li>
+            <li>Hash 3: <code id="hash3">—</code> <small id="hash3Time">—</small></li>
+          </ul>
+          <button id="simulateBtn" class="ghost-btn">Simulate tampering</button>
+        </div>
+
+        <div class="panel">
+          <div class="table-header"><h4>Recent Alerts</h4></div>
+          <ul id="alertList" class="alert-list">
+            <li class="empty-state">No alerts yet</li>
+          </ul>
+        </div>
+      </aside>
     </div>
   </section>
 
