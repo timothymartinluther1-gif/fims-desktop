@@ -16,7 +16,7 @@ a = Analysis(
         ('script.js', '.'),
         ('style.css', '.'),
     ],
-    hiddenimports=['flask_cors', 'webview'],
+    hiddenimports=['flask_cors', 'webview', 'requests', 'urllib3', 'idna', 'charset_normalizer', 'certifi'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

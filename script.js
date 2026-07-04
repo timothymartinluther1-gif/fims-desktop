@@ -576,6 +576,13 @@ registerForm.addEventListener('submit', async (event) => {
       body: JSON.stringify({ name, email, password }),
     });
 
+    if (response.requires_email_confirmation) {
+      showToast(response.message || 'Check your email to verify your account before logging in.', 'success');
+      toggleAuthForm('login');
+      registerForm.reset();
+      return;
+    }
+
     state.currentUser = response.user;
     saveState();
     await startMonitoringBackend();

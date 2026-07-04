@@ -7,9 +7,62 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+import requests # type: ignore
 from flask import Flask, jsonify, request, send_from_directory, render_template_string # type: ignore
 from flask_cors import CORS # type: ignore
+
+# ===== Supabase Auth (shared accounts across every install - desktop & mobile) =====
+# The anon/publishable key is safe to ship in client apps by design - Supabase
+# enforces access control server-side, not by hiding this key. Never put the
+# service_role key or DB password here; those grant unrestricted admin access
+# and must only ever live on a server you control, never in distributed code.
+SUPABASE_URL = "https://goqdtnudjcomwvqbwidt.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdvcWR0bnVkamNvbXd2cWJ3aWR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMxNTE0NjgsImV4cCI6MjA5ODcyNzQ2OH0.3Ih5Dst0wnVmJNxaUZmjpVEW1j1EoxskTNgawh6unhM"
+
+
+def supabase_signup(email: str, password: str, name: str) -> tuple[bool, dict]:
+    """Returns (success, data). data is the parsed JSON body either way."""
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/signup",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email, "password": password, "data": {"name": name}},
+            timeout=15,
+        )
+        body = resp.json() if resp.content else {}
+        return resp.ok, body
+    except requests.RequestException as exc:
+        return False, {"message": f"Could not reach the auth server: {exc}"}
+
+
+def supabase_login(email: str, password: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "password"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email, "password": password},
+            timeout=15,
+        )
+        body = resp.json() if resp.content else {}
+        return resp.ok, body
+    except requests.RequestException as exc:
+        return False, {"message": f"Could not reach the auth server: {exc}"}
+
+
+def supabase_error_message(body: dict) -> str:
+    msg = body.get("error_description") or body.get("msg") or body.get("message") or body.get("error") or ""
+    lowered = msg.lower()
+    if "already registered" in lowered or "already exists" in lowered:
+        return "An account with this email already exists."
+    if "confirm" in lowered and ("email" in lowered or "confirmed" in lowered):
+        return "Please verify your email before logging in - check your inbox for the confirmation link."
+    if "invalid login credentials" in lowered:
+        return "Invalid email or password."
+    if "password" in lowered and ("least" in lowered or "short" in lowered or "weak" in lowered):
+        return msg or "Password does not meet requirements (minimum 6 characters)."
+    return msg or "Something went wrong. Please try again."
 
 
 def resource_path() -> Path:
@@ -125,14 +178,6 @@ class Database:
 def migrate_schema(conn: sqlite3.Connection) -> None:
     cursor = conn.cursor()
 
-    users_cols = {row[1] for row in cursor.execute("PRAGMA table_info(users)").fetchall()}
-    if "name" not in users_cols:
-        if "username" in users_cols:
-            cursor.execute("ALTER TABLE users RENAME COLUMN username TO name")
-        else:
-            cursor.execute("ALTER TABLE users ADD COLUMN name TEXT")
-    if "salt" not in users_cols:
-        cursor.execute("ALTER TABLE users ADD COLUMN salt TEXT NOT NULL DEFAULT ''")
     files_cols = {row[1] for row in cursor.execute("PRAGMA table_info(files)").fetchall()}
     if "name" not in files_cols:
         if "file_name" in files_cols:
@@ -230,18 +275,9 @@ def init_db():
 
     cursor.executescript(
         """
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            email TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS files (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
             name TEXT NOT NULL,
             path TEXT NOT NULL,
             trusted_hash TEXT NOT NULL,
@@ -249,8 +285,7 @@ def init_db():
             status TEXT NOT NULL DEFAULT 'monitoring',
             last_checked TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            uploaded_at TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(id)
+            uploaded_at TEXT
         );
 
         CREATE TABLE IF NOT EXISTS hash_history (
@@ -264,14 +299,13 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS alerts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
             file_id INTEGER NOT NULL,
             file_name TEXT NOT NULL,
             previous_hash TEXT NOT NULL,
             new_hash TEXT NOT NULL,
             timestamp TEXT NOT NULL,
             resolved INTEGER DEFAULT 0,
-            FOREIGN KEY(user_id) REFERENCES users(id),
             FOREIGN KEY(file_id) REFERENCES files(id)
         );
         """
@@ -353,32 +387,28 @@ def register():
     if not name or not email or not password:
         return jsonify({"success": False, "message": "All fields are required."}), 400
 
-    salt = generate_salt()
-    password_hash = hash_password(password, salt)
+    ok, body = supabase_signup(email, password, name)
+    if not ok:
+        return jsonify({"success": False, "message": supabase_error_message(body)}), 400
 
-    conn = Database.get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            "INSERT INTO users (name, email, password_hash, salt, created_at) VALUES (?, ?, ?, ?, ?)",
-            (name, email, f"{salt}:{password_hash}", salt, now_iso()),
-        )
-        conn.commit()
-        user_id = cursor.lastrowid
-    except sqlite3.IntegrityError:
-        conn.close()
-        return jsonify({"success": False, "message": "Email already exists."}), 409
-    finally:
-        conn.close()
+    user = body.get("user") or body  # Supabase sometimes returns the user object directly
+    user_id = user.get("id")
+    has_session = bool(body.get("access_token"))
+
+    if not user_id:
+        return jsonify({"success": False, "message": "Registration failed. Please try again."}), 400
+
+    if has_session:
+        return jsonify({
+            "success": True,
+            "message": "Account created successfully.",
+            "user": {"id": user_id, "name": name, "email": email},
+        })
 
     return jsonify({
         "success": True,
-        "message": "User registered successfully.",
-        "user": {
-            "id": user_id,
-            "name": name,
-            "email": email,
-        },
+        "requires_email_confirmation": True,
+        "message": "Account created! Check your email to verify your address before logging in.",
     })
 
 
@@ -391,36 +421,31 @@ def login():
     if not email or not password:
         return jsonify({"success": False, "message": "Email and password are required."}), 400
 
-    conn = Database.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE email = ?", (email,))
-    user = cursor.fetchone()
-    conn.close()
+    ok, body = supabase_login(email, password)
+    if not ok:
+        return jsonify({"success": False, "message": supabase_error_message(body)}), 401
 
-    if not user:
-        return jsonify({"success": False, "message": "Invalid credentials."}), 401
+    user = body.get("user") or {}
+    user_id = user.get("id")
+    if not user_id:
+        return jsonify({"success": False, "message": "Login failed. Please try again."}), 401
 
-    stored_value = user["password_hash"]
-    salt, stored_hash = stored_value.split(':', 1)
-    incoming_hash = hash_password(password, salt)
-
-    if incoming_hash != stored_hash:
-        return jsonify({"success": False, "message": "Invalid credentials."}), 401
+    name = (user.get("user_metadata") or {}).get("name") or user.get("email", "").split("@")[0]
 
     return jsonify({
         "success": True,
         "message": "Login successful.",
         "user": {
-            "id": user["id"],
-            "name": user["name"],
-            "email": user["email"],
+            "id": user_id,
+            "name": name,
+            "email": user.get("email", email),
         },
     })
 
 
 @app.route('/api/files', methods=['GET'])
 def get_files():
-    user_id = request.args.get('user_id', type=int)
+    user_id = request.args.get('user_id')
     if user_id is None:
         return jsonify({"success": False, "message": "user_id is required."}), 400
 
@@ -441,7 +466,7 @@ def get_files():
 
 @app.route('/api/files', methods=['POST'])
 def upload_file():
-    user_id = request.form.get('user_id', type=int)
+    user_id = request.form.get('user_id')
     file_path = (request.form.get('file_path') or '').strip()
     uploaded_file = request.files.get('file')
 
@@ -577,7 +602,7 @@ def delete_file(file_id):
 
 @app.route('/api/alerts', methods=['GET'])
 def get_alerts():
-    user_id = request.args.get('user_id', type=int)
+    user_id = request.args.get('user_id')
     if user_id is None:
         return jsonify({"success": False, "message": "user_id is required."}), 400
 
@@ -625,7 +650,7 @@ def resolve_alert(alert_id):
 
 @app.route('/api/status', methods=['GET'])
 def get_status():
-    user_id = request.args.get('user_id', type=int)
+    user_id = request.args.get('user_id')
     if user_id is None:
         return jsonify({"success": False, "message": "user_id is required."}), 400
 
@@ -659,31 +684,15 @@ def get_status():
 
 @app.route('/api/users', methods=['GET'])
 def get_users():
-    user_id = request.args.get('user_id', type=int)
-    if user_id is None:
-        return jsonify({"success": False, "message": "user_id is required."}), 400
-
-    conn = Database.get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, email FROM users WHERE id = ?", (user_id,))
-    requester = cursor.fetchone()
-
-    if not requester:
-        conn.close()
-        return jsonify({"success": False, "message": "User not found."}), 404
-
-    if requester["email"] != "timothymartinluther54@gmail.com":
-        conn.close()
-        return jsonify({"success": False, "message": "Access denied."}), 403
-
-    cursor.execute("SELECT id, name, email, created_at FROM users ORDER BY id ASC")
-    rows = cursor.fetchall()
-    conn.close()
-
+    # Listing every registered user requires Supabase's service_role key,
+    # which must never be embedded in a distributed desktop/mobile app -
+    # anyone could extract it and gain full unrestricted access to every
+    # user's data. Admins should view the user list from the Supabase
+    # dashboard (Authentication tab) instead.
     return jsonify({
-        "success": True,
-        "users": [row_to_dict(row) for row in rows],
-    })
+        "success": False,
+        "message": "User management now lives in the Supabase dashboard for security reasons.",
+    }), 410
 
 
 @app.route('/api/simulate/<int:file_id>', methods=['POST'])
