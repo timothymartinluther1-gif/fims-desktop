@@ -77,6 +77,7 @@
           <input type="password" id="loginPassword" required autocomplete="current-password" />
         </div>
         <button type="submit" class="submit-btn">Log In</button>
+        <button type="button" id="showForgotPasswordBtn" class="link-btn">Forgot password?</button>
       </form>
 
       <form id="registerForm" class="auth-form">
@@ -93,6 +94,42 @@
           <input type="password" id="registerPassword" required minlength="6" autocomplete="new-password" />
         </div>
         <button type="submit" class="submit-btn">Create Account</button>
+      </form>
+
+      <form id="verifyForm" class="auth-form">
+        <p class="field-hint">Enter the 6-digit code we emailed to <strong id="verifyEmailLabel"></strong>.</p>
+        <input type="hidden" id="verifyEmail" />
+        <div class="field-group">
+          <label for="verifyCode">Verification code</label>
+          <input type="text" id="verifyCode" inputmode="numeric" required autocomplete="one-time-code" />
+        </div>
+        <button type="submit" class="submit-btn">Verify & Log In</button>
+        <button type="button" id="backToLoginFromVerifyBtn" class="link-btn">Back to log in</button>
+      </form>
+
+      <form id="forgotPasswordForm" class="auth-form">
+        <p class="field-hint">Enter your email and we'll send you a reset code.</p>
+        <div class="field-group">
+          <label for="forgotEmail">Email</label>
+          <input type="email" id="forgotEmail" required autocomplete="email" />
+        </div>
+        <button type="submit" class="submit-btn">Send Reset Code</button>
+        <button type="button" id="backToLoginFromForgotBtn" class="link-btn">Back to log in</button>
+      </form>
+
+      <form id="resetPasswordForm" class="auth-form">
+        <p class="field-hint">Enter the code we emailed to <strong id="resetEmailLabel"></strong> and choose a new password.</p>
+        <input type="hidden" id="resetEmail" />
+        <div class="field-group">
+          <label for="resetCode">Reset code</label>
+          <input type="text" id="resetCode" inputmode="numeric" required autocomplete="one-time-code" />
+        </div>
+        <div class="field-group">
+          <label for="resetNewPassword">New password</label>
+          <input type="password" id="resetNewPassword" required minlength="6" autocomplete="new-password" />
+        </div>
+        <button type="submit" class="submit-btn">Reset Password</button>
+        <button type="button" id="backToLoginFromResetBtn" class="link-btn">Back to log in</button>
       </form>
     </div>
   </section>

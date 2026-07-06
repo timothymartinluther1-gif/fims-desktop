@@ -742,6 +742,22 @@ button {
   padding: 24px 16px;
 }
 
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 8px 0 0;
+  width: 100%;
+  text-align: center;
+}
+
+.link-btn:hover {
+  color: var(--accent-1);
+}
+
 /* ===== Action button rows (file table, alerts) ===== */
 .row-actions {
   display: flex;

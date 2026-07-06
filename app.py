@@ -31,8 +31,10 @@ def supabase_signup(email: str, password: str, name: str) -> tuple[bool, dict]:
             timeout=15,
         )
         body = resp.json() if resp.content else {}
+        print(f"[auth] signup {email} -> HTTP {resp.status_code}: {body}", flush=True)
         return resp.ok, body
     except requests.RequestException as exc:
+        print(f"[auth] signup {email} -> EXCEPTION: {exc!r}", flush=True)
         return False, {"message": f"Could not reach the auth server: {exc}"}
 
 
@@ -46,8 +48,78 @@ def supabase_login(email: str, password: str) -> tuple[bool, dict]:
             timeout=15,
         )
         body = resp.json() if resp.content else {}
+        print(f"[auth] login {email} -> HTTP {resp.status_code}: {body}", flush=True)
         return resp.ok, body
     except requests.RequestException as exc:
+        print(f"[auth] login {email} -> EXCEPTION: {exc!r}", flush=True)
+        return False, {"message": f"Could not reach the auth server: {exc}"}
+
+
+def supabase_recover(email: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/recover",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"email": email},
+            timeout=15,
+        )
+        body = resp.json() if resp.content else {}
+        print(f"[auth] recover {email} -> HTTP {resp.status_code}: {body}", flush=True)
+        return resp.ok, body
+    except requests.RequestException as exc:
+        print(f"[auth] recover {email} -> EXCEPTION: {exc!r}", flush=True)
+        return False, {"message": f"Could not reach the auth server: {exc}"}
+
+
+def supabase_verify_signup(email: str, token: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/verify",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"type": "signup", "email": email, "token": token},
+            timeout=15,
+        )
+        body = resp.json() if resp.content else {}
+        print(f"[auth] verify-signup {email} -> HTTP {resp.status_code}: {body}", flush=True)
+        return resp.ok, body
+    except requests.RequestException as exc:
+        print(f"[auth] verify-signup {email} -> EXCEPTION: {exc!r}", flush=True)
+        return False, {"message": f"Could not reach the auth server: {exc}"}
+
+
+def supabase_verify_recovery(email: str, token: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/verify",
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"type": "recovery", "email": email, "token": token},
+            timeout=15,
+        )
+        body = resp.json() if resp.content else {}
+        print(f"[auth] verify-recovery {email} -> HTTP {resp.status_code}: {body}", flush=True)
+        return resp.ok, body
+    except requests.RequestException as exc:
+        print(f"[auth] verify-recovery {email} -> EXCEPTION: {exc!r}", flush=True)
+        return False, {"message": f"Could not reach the auth server: {exc}"}
+
+
+def supabase_update_password(access_token: str, new_password: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.put(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+            },
+            json={"password": new_password},
+            timeout=15,
+        )
+        body = resp.json() if resp.content else {}
+        print(f"[auth] update-password -> HTTP {resp.status_code}: {body}", flush=True)
+        return resp.ok, body
+    except requests.RequestException as exc:
+        print(f"[auth] update-password -> EXCEPTION: {exc!r}", flush=True)
         return False, {"message": f"Could not reach the auth server: {exc}"}
 
 
@@ -102,7 +174,12 @@ CORS(app)
 BASE_DIR = RESOURCE_DIR
 DB_PATH = APP_DATA_DIR / "integrity_monitor.db"
 UPLOAD_DIR = APP_DATA_DIR / "uploads"
+BACKUP_DIR = APP_DATA_DIR / "backups"  # last known-good bytes per monitored file, for Reverse
 LEGACY_DB_PATH = BASE_DIR / "integrity_monitor.db"
+
+
+def backup_path_for(file_id: int) -> Path:
+    return BACKUP_DIR / f"{file_id}.bin"
 
 
 _storage_initialized = False
@@ -132,6 +209,7 @@ def ensure_secure_storage() -> None:
 
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 
     # Everything below (legacy migration + hiding attributes) only needs to
     # happen once per process, not on every database connection.
@@ -340,6 +418,16 @@ def ensure_db():
     init_db()
 
 
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    import traceback
+    traceback.print_exc()
+    return jsonify({
+        "success": False,
+        "message": f"Unexpected server error: {exc}",
+    }), 500
+
+
 # ===== SERVE FRONTEND =====
 @app.route('/')
 def index():
@@ -408,8 +496,78 @@ def register():
     return jsonify({
         "success": True,
         "requires_email_confirmation": True,
-        "message": "Account created! Check your email to verify your address before logging in.",
+        "message": "Account created! Enter the 6-digit code we emailed you to finish signing up.",
     })
+
+
+@app.route('/api/verify-signup', methods=['POST'])
+def verify_signup():
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    token = (data.get('token') or '').strip()
+
+    if not email or not token:
+        return jsonify({"success": False, "message": "Email and code are required."}), 400
+
+    ok, body = supabase_verify_signup(email, token)
+    if not ok:
+        return jsonify({"success": False, "message": supabase_error_message(body)}), 400
+
+    user = body.get("user") or {}
+    user_id = user.get("id")
+    if not user_id:
+        return jsonify({"success": False, "message": "Verification failed. Please try again."}), 400
+
+    name = (user.get("user_metadata") or {}).get("name") or email.split("@")[0]
+
+    return jsonify({
+        "success": True,
+        "message": "Email verified! You're logged in.",
+        "user": {"id": user_id, "name": name, "email": user.get("email", email)},
+    })
+
+
+@app.route('/api/forgot-password', methods=['POST'])
+def forgot_password():
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+
+    if not email:
+        return jsonify({"success": False, "message": "Email is required."}), 400
+
+    supabase_recover(email)
+    # Always the same response, whether or not the account exists - this is
+    # standard practice so the app can't be used to check which emails are
+    # registered.
+    return jsonify({
+        "success": True,
+        "message": "If an account exists for that email, a reset code has been sent.",
+    })
+
+
+@app.route('/api/reset-password', methods=['POST'])
+def reset_password():
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    token = (data.get('token') or '').strip()
+    new_password = data.get('new_password') or ''
+
+    if not email or not token or not new_password:
+        return jsonify({"success": False, "message": "Email, code, and new password are required."}), 400
+
+    ok, body = supabase_verify_recovery(email, token)
+    if not ok:
+        return jsonify({"success": False, "message": supabase_error_message(body)}), 400
+
+    access_token = body.get("access_token")
+    if not access_token:
+        return jsonify({"success": False, "message": "Verification failed. Please try again."}), 400
+
+    ok2, body2 = supabase_update_password(access_token, new_password)
+    if not ok2:
+        return jsonify({"success": False, "message": supabase_error_message(body2)}), 400
+
+    return jsonify({"success": True, "message": "Password updated! You can now log in."})
 
 
 @app.route('/api/login', methods=['POST'])
@@ -529,6 +687,11 @@ def upload_file():
     conn.commit()
     conn.close()
 
+    try:
+        backup_path_for(file_id).write_bytes(file_bytes)
+    except OSError as exc:
+        print(f"[backup] could not write initial backup for file {file_id}: {exc!r}", flush=True)
+
     return jsonify({
         "success": True,
         "message": "File is now being monitored successfully.",
@@ -593,6 +756,11 @@ def delete_file(file_id):
     cursor.execute("DELETE FROM files WHERE id = ?", (file_id,))
     conn.commit()
     conn.close()
+
+    try:
+        backup_path_for(file_id).unlink(missing_ok=True)
+    except OSError:
+        pass
     
     return jsonify({
         "success": True,
@@ -629,22 +797,120 @@ def get_alerts():
 
 @app.route('/api/alerts/<int:alert_id>/resolve', methods=['POST'])
 def resolve_alert(alert_id):
+    """The user confirms THEY made this change on purpose: accept the
+    current content as the new trusted baseline and resume monitoring.
+    (Previously this only flipped the alert's resolved flag and left the
+    file stuck showing "tampered" forever - now it actually clears it.)"""
     conn = Database.get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE alerts SET resolved = 1 WHERE id = ?",
-        (alert_id,)
-    )
-    if cursor.rowcount == 0:
+
+    cursor.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,))
+    alert = cursor.fetchone()
+    if not alert:
         conn.close()
         return jsonify({"success": False, "message": "Alert not found."}), 404
-    
+
+    file_id = alert["file_id"]
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    file_row = cursor.fetchone()
+    if not file_row:
+        conn.close()
+        return jsonify({"success": False, "message": "Monitored file not found."}), 404
+
+    monitored_path = Path(file_row["path"])
+    timestamp = now_iso()
+
+    try:
+        current_bytes = monitored_path.read_bytes()
+        current_hash = compute_hash(current_bytes)
+    except OSError as exc:
+        conn.close()
+        return jsonify({
+            "success": False,
+            "message": f"Can't read the file to accept it as-is: {exc}. If it was deleted, use Reverse instead to restore it, or Delete to stop monitoring it.",
+        }), 400
+
+    # Accept current content as the new trusted baseline.
+    cursor.execute(
+        "UPDATE files SET trusted_hash = ?, current_hash = ?, status = 'monitoring', last_checked = ? WHERE id = ?",
+        (current_hash, current_hash, timestamp, file_id),
+    )
+    cursor.execute(
+        "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
+        (file_id, current_hash, timestamp, 'accepted'),
+    )
+    # Clear every pending alert for this file, not just the one clicked -
+    # accepting the change means none of them are actionable anymore.
+    cursor.execute(
+        "UPDATE alerts SET resolved = 1 WHERE file_id = ? AND resolved = 0",
+        (file_id,),
+    )
     conn.commit()
     conn.close()
-    
+
+    try:
+        backup_path_for(file_id).write_bytes(current_bytes)
+    except OSError as exc:
+        print(f"[backup] could not update backup for file {file_id}: {exc!r}", flush=True)
+
     return jsonify({
         "success": True,
-        "message": "Alert resolved successfully."
+        "message": "Change accepted. This is now the trusted version - monitoring continues from here.",
+    })
+
+
+@app.route('/api/files/<int:file_id>/reverse', methods=['POST'])
+def reverse_file(file_id):
+    """The user did NOT make this change: restore the file to its last
+    known-good content and keep monitoring against the original baseline."""
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    file_row = cursor.fetchone()
+    if not file_row:
+        conn.close()
+        return jsonify({"success": False, "message": "File not found."}), 404
+
+    backup_file = backup_path_for(file_id)
+    if not backup_file.exists():
+        conn.close()
+        return jsonify({
+            "success": False,
+            "message": "No backup is available for this file, so it can't be automatically restored.",
+        }), 400
+
+    monitored_path = Path(file_row["path"])
+    timestamp = now_iso()
+
+    try:
+        backup_bytes = backup_file.read_bytes()
+        monitored_path.parent.mkdir(parents=True, exist_ok=True)
+        monitored_path.write_bytes(backup_bytes)
+    except OSError as exc:
+        conn.close()
+        return jsonify({"success": False, "message": f"Could not restore the file: {exc}"}), 400
+
+    restored_hash = compute_hash(backup_bytes)
+
+    cursor.execute(
+        "UPDATE files SET current_hash = ?, status = 'monitoring', last_checked = ? WHERE id = ?",
+        (restored_hash, timestamp, file_id),
+    )
+    cursor.execute(
+        "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
+        (file_id, restored_hash, timestamp, 'restored'),
+    )
+    cursor.execute(
+        "UPDATE alerts SET resolved = 1 WHERE file_id = ? AND resolved = 0",
+        (file_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "message": "File restored to its last known-good version. Monitoring continues.",
     })
 
 

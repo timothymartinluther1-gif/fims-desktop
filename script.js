@@ -24,6 +24,10 @@ const authPanel = document.getElementById('authPanel');
 const dashboardPanel = document.getElementById('dashboardPanel');
 const loginForm = document.getElementById('loginForm');
 const registerForm = document.getElementById('registerForm');
+const verifyForm = document.getElementById('verifyForm');
+const forgotPasswordForm = document.getElementById('forgotPasswordForm');
+const resetPasswordForm = document.getElementById('resetPasswordForm');
+const authToggle = document.querySelector('.auth-toggle');
 const toggleButtons = document.querySelectorAll('.toggle-btn');
 const homeLoginBtn = document.getElementById('homeLoginBtn');
 const homeRegisterBtn = document.getElementById('homeRegisterBtn');
@@ -58,13 +62,19 @@ const hash3Time = document.getElementById('hash3Time');
 
 // ===== Helper Functions =====
 
+const ALL_AUTH_FORMS = { login: loginForm, register: registerForm, verify: verifyForm, forgot: forgotPasswordForm, reset: resetPasswordForm };
+
 function toggleAuthForm(formName) {
+  const isPrimary = formName === 'login' || formName === 'register';
+  authToggle.classList.toggle('hidden', !isPrimary);
+
   toggleButtons.forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.form === formName);
   });
 
-  loginForm.classList.toggle('active', formName === 'login');
-  registerForm.classList.toggle('active', formName === 'register');
+  Object.entries(ALL_AUTH_FORMS).forEach(([name, form]) => {
+    form.classList.toggle('active', name === formName);
+  });
 }
 
 function saveState() {
@@ -391,12 +401,25 @@ async function simulateChange(fileId) {
 
 async function resolveAlert(alertId) {
   try {
-    await apiRequest(`/api/alerts/${alertId}/resolve`, { method: 'POST' });
-    showToast('Alert resolved');
+    const response = await apiRequest(`/api/alerts/${alertId}/resolve`, { method: 'POST' });
+    showToast(response.message || 'Change accepted - monitoring continues.');
     await loadDashboardData();
   } catch (error) {
     console.error('Resolve failed:', error);
     showToast(error.message || 'Resolve failed', 'error');
+  }
+}
+
+async function reverseFile(fileId) {
+  if (!confirm('This will overwrite the current file with its last known-good version. Continue?')) return;
+
+  try {
+    const response = await apiRequest(`/api/files/${fileId}/reverse`, { method: 'POST' });
+    showToast(response.message || 'File restored.');
+    await loadDashboardData();
+  } catch (error) {
+    console.error('Reverse failed:', error);
+    showToast(error.message || 'Reverse failed', 'error');
   }
 }
 
@@ -441,6 +464,7 @@ function renderDashboard() {
         <td>${formatTime(file.last_checked)}</td>
         <td>
           <div class="row-actions">
+            ${file.status && file.status !== 'monitoring' ? `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="event.stopPropagation(); reverseFile(${file.id})">Reverse</button>` : ''}
             <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem;" onclick="event.stopPropagation(); simulateChange(${file.id})">Simulate</button>
             <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="event.stopPropagation(); deleteFile(${file.id})">Delete</button>
           </div>
@@ -477,7 +501,12 @@ function renderDashboard() {
               ${alert.new_hash ? alert.new_hash.slice(0, 12) + '...' : '—'}
             </small>
           </div>
-          ${!isResolved ? `<button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="event.stopPropagation(); resolveAlert(${alert.id})">Resolve</button>` : ''}
+          ${!isResolved ? `
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+              <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="event.stopPropagation(); reverseFile(${alert.file_id})">Reverse</button>
+              <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(212, 163, 115, 0.15); color: var(--accent-2);" onclick="event.stopPropagation(); resolveAlert(${alert.id})">Resolve</button>
+            </div>
+          ` : ''}
         </div>
       `;
       alertList.appendChild(item);
@@ -577,8 +606,10 @@ registerForm.addEventListener('submit', async (event) => {
     });
 
     if (response.requires_email_confirmation) {
-      showToast(response.message || 'Check your email to verify your account before logging in.', 'success');
-      toggleAuthForm('login');
+      showToast(response.message || 'Check your email for a verification code.', 'success');
+      document.getElementById('verifyEmail').value = email;
+      document.getElementById('verifyEmailLabel').textContent = email;
+      toggleAuthForm('verify');
       registerForm.reset();
       return;
     }
@@ -599,6 +630,75 @@ toggleButtons.forEach((btn) => {
   btn.addEventListener('click', () => {
     toggleAuthForm(btn.dataset.form);
   });
+});
+
+document.getElementById('showForgotPasswordBtn').addEventListener('click', () => {
+  toggleAuthForm('forgot');
+});
+document.getElementById('backToLoginFromVerifyBtn').addEventListener('click', () => toggleAuthForm('login'));
+document.getElementById('backToLoginFromForgotBtn').addEventListener('click', () => toggleAuthForm('login'));
+document.getElementById('backToLoginFromResetBtn').addEventListener('click', () => toggleAuthForm('login'));
+
+verifyForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const email = document.getElementById('verifyEmail').value.trim();
+  const token = document.getElementById('verifyCode').value.trim();
+
+  try {
+    const response = await apiRequest('/api/verify-signup', {
+      method: 'POST',
+      body: JSON.stringify({ email, token }),
+    });
+    state.currentUser = response.user;
+    saveState();
+    await startMonitoringBackend();
+    showDashboard();
+    showToast('Email verified! Welcome in.');
+    verifyForm.reset();
+  } catch (error) {
+    console.error('Verification error:', error);
+    showToast(error.message || 'Verification failed', 'error');
+  }
+});
+
+forgotPasswordForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const email = document.getElementById('forgotEmail').value.trim();
+
+  try {
+    const response = await apiRequest('/api/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    });
+    showToast(response.message || 'Reset code sent.', 'success');
+    document.getElementById('resetEmail').value = email;
+    document.getElementById('resetEmailLabel').textContent = email;
+    toggleAuthForm('reset');
+    forgotPasswordForm.reset();
+  } catch (error) {
+    console.error('Forgot-password error:', error);
+    showToast(error.message || 'Could not send reset code', 'error');
+  }
+});
+
+resetPasswordForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const email = document.getElementById('resetEmail').value.trim();
+  const token = document.getElementById('resetCode').value.trim();
+  const newPassword = document.getElementById('resetNewPassword').value;
+
+  try {
+    const response = await apiRequest('/api/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ email, token, new_password: newPassword }),
+    });
+    showToast(response.message || 'Password updated. Please log in.', 'success');
+    resetPasswordForm.reset();
+    toggleAuthForm('login');
+  } catch (error) {
+    console.error('Reset-password error:', error);
+    showToast(error.message || 'Could not reset password', 'error');
+  }
 });
 
 // File monitoring setup
