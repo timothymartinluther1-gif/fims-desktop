@@ -9,6 +9,7 @@ const state = {
   users: [],
   selectedFileId: null,
   selectedFileHistory: [],
+  fileFilter: 'all', // 'all' | 'monitoring' | 'tampered'
   stats: {
     files: 0,
     alerts: 0,
@@ -399,6 +400,55 @@ async function simulateChange(fileId) {
   }
 }
 
+function setFileFilter(filter) {
+  state.fileFilter = filter;
+  renderDashboard();
+
+  document.querySelectorAll('.stat-card').forEach((card) => card.classList.remove('active'));
+  if (filter === 'monitoring') document.getElementById('statSafeCard')?.classList.add('active');
+  if (filter === 'tampered') document.getElementById('statTamperedCard')?.classList.add('active');
+
+  const dashboardBtn = document.getElementById('dashboardBtn');
+  if (dashboardBtn) dashboardBtn.classList.toggle('active', filter === 'all');
+
+  document.getElementById('filesTablePanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// --- Theme toggle (persisted, matches the script that runs before first paint) ---
+const themeToggleBtn = document.getElementById('themeToggleBtn');
+function applyThemeButtonIcon() {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (themeToggleBtn) themeToggleBtn.textContent = isDark ? '☀️' : '🌙';
+}
+applyThemeButtonIcon();
+
+if (themeToggleBtn) {
+  themeToggleBtn.addEventListener('click', () => {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    if (isDark) {
+      document.documentElement.removeAttribute('data-theme');
+      localStorage.setItem('integrity-theme', 'light');
+    } else {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      localStorage.setItem('integrity-theme', 'dark');
+    }
+    applyThemeButtonIcon();
+  });
+}
+
+// --- Dashboard / stat-card navigation ---
+const dashboardBtnEl = document.getElementById('dashboardBtn');
+if (dashboardBtnEl) {
+  dashboardBtnEl.addEventListener('click', () => setFileFilter('all'));
+}
+
+document.getElementById('statSafeCard')?.addEventListener('click', () => setFileFilter('monitoring'));
+document.getElementById('statTamperedCard')?.addEventListener('click', () => setFileFilter('tampered'));
+document.getElementById('statFilesCard')?.addEventListener('click', () => setFileFilter('all'));
+document.getElementById('statAlertsCard')?.addEventListener('click', () => {
+  document.getElementById('alertsPanelHeader')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+});
+
 async function resolveAlert(alertId) {
   try {
     const response = await apiRequest(`/api/alerts/${alertId}/resolve`, { method: 'POST' });
@@ -437,12 +487,27 @@ function renderDashboard() {
   alertCount.textContent = state.stats.alerts || 0;
   fileCount.textContent = state.stats.files || 0;
 
-  // Render files table
-  fileTableBody.innerHTML = '';
-  if (!state.files.length) {
-    fileTableBody.innerHTML = '<tr><td colspan="5" class="empty-row">No files uploaded yet</td></tr>';
+  // Render files table (respecting the active stat-card filter, if any)
+  const filteredFiles = state.fileFilter === 'all'
+    ? state.files
+    : state.files.filter((file) => {
+        const status = file.status || 'monitoring';
+        return state.fileFilter === 'monitoring' ? status === 'monitoring' : status !== 'monitoring';
+      });
+
+  const filterIndicator = document.getElementById('fileFilterIndicator');
+  if (state.fileFilter === 'all') {
+    filterIndicator.classList.add('hidden');
   } else {
-    state.files.forEach((file) => {
+    filterIndicator.classList.remove('hidden');
+    filterIndicator.innerHTML = `Showing: ${state.fileFilter === 'monitoring' ? 'Safe' : 'Tampered'} only <a href="#" onclick="event.preventDefault(); setFileFilter('all');" style="margin-left: 6px; text-decoration: underline;">Clear</a>`;
+  }
+
+  fileTableBody.innerHTML = '';
+  if (!filteredFiles.length) {
+    fileTableBody.innerHTML = `<tr><td colspan="5" class="empty-row">${state.files.length ? 'No files match this filter' : 'No files uploaded yet'}</td></tr>`;
+  } else {
+    filteredFiles.forEach((file) => {
       const hashToShow = file.current_hash || file.trusted_hash || '—';
 
       const row = document.createElement('tr');
@@ -500,6 +565,14 @@ function renderDashboard() {
               ${alert.previous_hash ? alert.previous_hash.slice(0, 12) + '...' : '—'} → 
               ${alert.new_hash ? alert.new_hash.slice(0, 12) + '...' : '—'}
             </small>
+            ${alert.os_username ? `
+              <div style="color: var(--muted); font-size: 0.75rem; margin-top: 4px;">
+                🖥️ ${alert.os_username}@${alert.hostname || 'unknown'}
+                ${alert.session_type === 'remote'
+                  ? ` · <span style="color: var(--danger);">Remote session${alert.remote_ip ? ' from ' + alert.remote_ip : ''}</span>`
+                  : ' · Local session'}
+              </div>
+            ` : ''}
           </div>
           ${!isResolved ? `
             <div style="display: flex; gap: 6px; flex-wrap: wrap;">

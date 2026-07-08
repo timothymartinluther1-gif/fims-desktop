@@ -5,6 +5,9 @@ import sqlite3
 import sys
 import threading
 import time
+import getpass
+import socket
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -343,6 +346,19 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         cursor.execute("DROP TABLE alerts_old")
 
     cursor.execute("UPDATE files SET current_hash = trusted_hash WHERE current_hash IS NULL AND trusted_hash IS NOT NULL")
+
+    # Audit columns: who was logged into this machine, and whether they
+    # connected remotely, at the moment tampering was detected.
+    alerts_cols = {row[1] for row in cursor.execute("PRAGMA table_info(alerts)").fetchall()}
+    if "os_username" not in alerts_cols:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN os_username TEXT NOT NULL DEFAULT ''")
+    if "hostname" not in alerts_cols:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN hostname TEXT NOT NULL DEFAULT ''")
+    if "session_type" not in alerts_cols:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN session_type TEXT NOT NULL DEFAULT ''")
+    if "remote_ip" not in alerts_cols:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN remote_ip TEXT NOT NULL DEFAULT ''")
+
     conn.commit()
 
 
@@ -403,6 +419,47 @@ def generate_salt() -> str:
 
 def compute_hash(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def get_session_info() -> dict:
+    """Best-effort info about who was logged into this machine, and
+    whether it was a local session or a Windows Remote Desktop session,
+    at the moment tampering was detected. Never touches the camera or
+    any other capture device - just OS session metadata.
+    """
+    info = {"os_username": "unknown", "hostname": "unknown", "session_type": "local", "remote_ip": ""}
+
+    try:
+        info["os_username"] = getpass.getuser()
+    except Exception:
+        pass
+    try:
+        info["hostname"] = socket.gethostname()
+    except Exception:
+        pass
+
+    if os.name == "nt":
+        try:
+            session_name = os.environ.get("SESSIONNAME", "")
+            if session_name and session_name.upper() != "CONSOLE":
+                info["session_type"] = "remote"
+                result = subprocess.run(
+                    ["netstat", "-n"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                for line in result.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[0] == "TCP" and parts[1].endswith(":3389") and parts[3] == "ESTABLISHED":
+                        foreign = parts[2]
+                        info["remote_ip"] = foreign.rsplit(":", 1)[0].strip("[]")
+                        break
+        except Exception:
+            pass
+
+    return info
 
 
 def now_iso() -> str:
@@ -1011,13 +1068,15 @@ def monitor_files():
                     current_hash = compute_hash(current_bytes)
                 except FileNotFoundError:
                     if file["status"] != 'tampered':
+                        session = get_session_info()
                         cursor.execute(
                             "UPDATE files SET status = 'tampered', last_checked = ? WHERE id = ?",
                             (now_iso(), file["id"]),
                         )
                         cursor.execute(
-                            "INSERT INTO alerts (user_id, file_id, file_name, previous_hash, new_hash, timestamp, resolved) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                            (file["user_id"], file["id"], file["name"], file["trusted_hash"], "FILE_MISSING", now_iso(), 0),
+                            "INSERT INTO alerts (user_id, file_id, file_name, previous_hash, new_hash, timestamp, resolved, os_username, hostname, session_type, remote_ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (file["user_id"], file["id"], file["name"], file["trusted_hash"], "FILE_MISSING", now_iso(), 0,
+                             session["os_username"], session["hostname"], session["session_type"], session["remote_ip"]),
                         )
                         # Add to history
                         cursor.execute(
@@ -1033,13 +1092,15 @@ def monitor_files():
 
                 if current_hash != file["trusted_hash"] and file["status"] != 'tampered':
                     # File has been tampered
+                    session = get_session_info()
                     cursor.execute(
                         "UPDATE files SET current_hash = ?, status = 'tampered', last_checked = ? WHERE id = ?",
                         (current_hash, now_iso(), file["id"]),
                     )
                     cursor.execute(
-                        "INSERT INTO alerts (user_id, file_id, file_name, previous_hash, new_hash, timestamp, resolved) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (file["user_id"], file["id"], file["name"], file["trusted_hash"], current_hash, now_iso(), 0),
+                        "INSERT INTO alerts (user_id, file_id, file_name, previous_hash, new_hash, timestamp, resolved, os_username, hostname, session_type, remote_ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (file["user_id"], file["id"], file["name"], file["trusted_hash"], current_hash, now_iso(), 0,
+                         session["os_username"], session["hostname"], session["session_type"], session["remote_ip"]),
                     )
                     # Add new hash to history
                     cursor.execute(

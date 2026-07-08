@@ -4,9 +4,21 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>File Integrity Monitor</title>
+<script>
+  // Applied before the stylesheet loads so there's no flash of the wrong theme.
+  (function () {
+    try {
+      var saved = localStorage.getItem('integrity-theme');
+      if (saved === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    } catch (e) {}
+  })();
+</script>
 <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+<button id="themeToggleBtn" class="theme-toggle-btn" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">🌙</button>
 <div class="app-shell">
 
   <!-- ===== HOME PANEL ===== -->
@@ -146,6 +158,7 @@
       </div>
       <div class="nav-links">
         <span class="connection-pill">● Live</span>
+        <button id="dashboardBtn" class="dashboard-nav-btn active">Dashboard</button>
         <button id="refreshBtn" class="refresh-btn">Refresh</button>
         <button id="logoutBtn" class="logout-btn">Log Out</button>
       </div>
@@ -153,9 +166,10 @@
 
     <div class="content-grid">
       <div class="left-column">
-        <div class="table-panel">
+        <div class="table-panel" id="filesTablePanel">
           <div class="table-header">
             <h4>Monitored Files</h4>
+            <span id="fileFilterIndicator" class="hidden"></span>
           </div>
           <div class="table-wrap">
             <table>
@@ -210,19 +224,19 @@
         </div>
 
         <div class="stats-grid">
-          <div class="stat-card success-card">
+          <div class="stat-card success-card" id="statSafeCard" data-filter="monitoring">
             <span>Safe</span>
             <strong id="safeCount">0</strong>
           </div>
-          <div class="stat-card warning-card">
+          <div class="stat-card warning-card" id="statTamperedCard" data-filter="tampered">
             <span>Tampered</span>
             <strong id="tamperedCount">0</strong>
           </div>
-          <div class="stat-card info-card">
+          <div class="stat-card info-card" id="statAlertsCard" data-filter="alerts">
             <span>Alerts</span>
             <strong id="alertCount">0</strong>
           </div>
-          <div class="stat-card">
+          <div class="stat-card" id="statFilesCard" data-filter="all">
             <span>Files</span>
             <strong id="fileCount">0</strong>
           </div>
@@ -243,7 +257,7 @@
         </div>
 
         <div class="panel">
-          <div class="table-header"><h4>Recent Alerts</h4></div>
+          <div class="table-header" id="alertsPanelHeader"><h4>Recent Alerts</h4></div>
           <ul id="alertList" class="alert-list">
             <li class="empty-state">No alerts yet</li>
           </ul>
