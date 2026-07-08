@@ -359,6 +359,10 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
     if "remote_ip" not in alerts_cols:
         cursor.execute("ALTER TABLE alerts ADD COLUMN remote_ip TEXT NOT NULL DEFAULT ''")
 
+    files_cols_2 = {row[1] for row in cursor.execute("PRAGMA table_info(files)").fetchall()}
+    if "locked" not in files_cols_2:
+        cursor.execute("ALTER TABLE files ADD COLUMN locked INTEGER NOT NULL DEFAULT 0")
+
     conn.commit()
 
 
@@ -761,6 +765,7 @@ def upload_file():
             "current_hash": file_hash,
             "status": 'monitoring',
             "last_checked": timestamp,
+            "locked": 0,
         },
     })
 
@@ -803,7 +808,13 @@ def delete_file(file_id):
     if not file:
         conn.close()
         return jsonify({"success": False, "message": "File not found."}), 404
-    
+
+    if file["locked"] and os.name == "nt":
+        # Never let a file end up permanently locked with no record left to
+        # undo it - always unlock before removing it from monitoring.
+        username = get_session_info()["os_username"]
+        _run_icacls([file["path"], "/remove:d", username])
+
     # Keep the original file on disk and only remove monitoring records for this user entry.
     # This ensures the app watches the live file in place without duplicating or deleting it.
     
@@ -874,6 +885,10 @@ def resolve_alert(alert_id):
         conn.close()
         return jsonify({"success": False, "message": "Monitored file not found."}), 404
 
+    if file_row["locked"]:
+        conn.close()
+        return jsonify({"success": False, "message": "This file is locked. Unlock it first."}), 400
+
     monitored_path = Path(file_row["path"])
     timestamp = now_iso()
 
@@ -929,6 +944,10 @@ def reverse_file(file_id):
         conn.close()
         return jsonify({"success": False, "message": "File not found."}), 404
 
+    if file_row["locked"]:
+        conn.close()
+        return jsonify({"success": False, "message": "This file is locked. Unlock it first."}), 400
+
     backup_file = backup_path_for(file_id)
     if not backup_file.exists():
         conn.close()
@@ -969,6 +988,95 @@ def reverse_file(file_id):
         "success": True,
         "message": "File restored to its last known-good version. Monitoring continues.",
     })
+
+
+def _run_icacls(args: list) -> tuple[bool, str]:
+    """Run icacls without ever popping a visible console window (see the
+    earlier os.system() bug - never repeat that mistake)."""
+    try:
+        kwargs = {}
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(
+            ["icacls"] + args,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            **kwargs,
+        )
+        return result.returncode == 0, (result.stdout + result.stderr).strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+@app.route('/api/files/<int:file_id>/lock', methods=['POST'])
+def lock_file(file_id):
+    """Denies normal read/write/delete access to this file for the current
+    Windows user account - which blocks any other program running in this
+    session too, not just casual browsing. Deliberately does NOT deny
+    permission-changing rights, so the app (running as the same user) can
+    still remove the block later via unlock. Windows will show any other
+    program a plain, generic "Access is denied" - nothing about our app or
+    why is revealed.
+    """
+    if os.name != "nt":
+        return jsonify({"success": False, "message": "File locking is only supported on Windows."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    file_row = cursor.fetchone()
+    if not file_row:
+        conn.close()
+        return jsonify({"success": False, "message": "File not found."}), 404
+    if file_row["locked"]:
+        conn.close()
+        return jsonify({"success": True, "message": "Already locked."})
+
+    path = file_row["path"]
+    username = get_session_info()["os_username"]
+
+    ok, output = _run_icacls([path, "/deny", f"{username}:(R,W,D,X)"])
+    if not ok:
+        conn.close()
+        return jsonify({"success": False, "message": f"Could not lock the file: {output}"}), 400
+
+    cursor.execute("UPDATE files SET locked = 1, last_checked = ? WHERE id = ?", (now_iso(), file_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": "File locked. It can only be opened again from this app."})
+
+
+@app.route('/api/files/<int:file_id>/unlock', methods=['POST'])
+def unlock_file(file_id):
+    if os.name != "nt":
+        return jsonify({"success": False, "message": "File locking is only supported on Windows."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    file_row = cursor.fetchone()
+    if not file_row:
+        conn.close()
+        return jsonify({"success": False, "message": "File not found."}), 404
+    if not file_row["locked"]:
+        conn.close()
+        return jsonify({"success": True, "message": "Already unlocked."})
+
+    path = file_row["path"]
+    username = get_session_info()["os_username"]
+
+    ok, output = _run_icacls([path, "/remove:d", username])
+    if not ok:
+        conn.close()
+        return jsonify({"success": False, "message": f"Could not unlock the file: {output}"}), 400
+
+    cursor.execute("UPDATE files SET locked = 0, last_checked = ? WHERE id = ?", (now_iso(), file_id))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": "File unlocked. Monitoring resumes normally."})
 
 
 @app.route('/api/status', methods=['GET'])
@@ -1058,10 +1166,15 @@ def monitor_files():
         try:
             conn = Database.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT id, user_id, name, path, trusted_hash, current_hash, status FROM files")
+            cursor.execute("SELECT id, user_id, name, path, trusted_hash, current_hash, status, locked FROM files")
             files = cursor.fetchall()
 
             for file in files:
+                if file["locked"]:
+                    # Locked files are intentionally inaccessible (even to
+                    # this app) until the user unlocks them - don't attempt
+                    # to read, and don't treat that as tampering.
+                    continue
                 try:
                     with open(file["path"], 'rb') as f:
                         current_bytes = f.read()

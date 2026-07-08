@@ -145,41 +145,45 @@ function getFileStatusClass(status) {
   }
 }
 
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
 function showToast(message, type = 'success') {
-  // Remove existing toast if any
   const existingToast = document.getElementById('toast');
   if (existingToast) {
     existingToast.remove();
   }
 
-  // Create toast element
   const toast = document.createElement('div');
   toast.id = 'toast';
-  toast.style.cssText = `
-    position: fixed;
-    bottom: 30px;
-    right: 30px;
-    background: #0f1b36;
-    color: #eef5ff;
-    padding: 16px 24px;
-    border-radius: 12px;
-    border: 1px solid rgba(149, 179, 255, 0.1);
-    box-shadow: 0 25px 50px rgba(0,0,0,0.35);
-    z-index: 9999;
-    max-width: 400px;
-    font-family: 'Inter', sans-serif;
-    font-size: 0.95rem;
-    animation: slideIn 0.3s ease;
-    border-left: 4px solid ${type === 'error' ? '#ff5d73' : '#1fbe80'};
-  `;
-  toast.textContent = message;
+  toast.className = `app-toast app-toast-${type}`;
+  toast.setAttribute('role', 'alert');
+
+  const icon = document.createElement('span');
+  icon.className = 'app-toast-icon';
+  icon.textContent = type === 'error' ? '⚠️' : '✅';
+
+  const text = document.createElement('span');
+  text.className = 'app-toast-text';
+  text.textContent = message;
+
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'app-toast-close';
+  closeBtn.setAttribute('aria-label', 'Dismiss');
+  closeBtn.textContent = '×';
+  closeBtn.addEventListener('click', () => toast.remove());
+
+  toast.appendChild(icon);
+  toast.appendChild(text);
+  toast.appendChild(closeBtn);
   document.body.appendChild(toast);
 
   setTimeout(() => {
     if (toast.parentNode) {
       toast.remove();
     }
-  }, 4000);
+  }, 5000);
 }
 
 function clearFileSelection() {
@@ -460,6 +464,29 @@ async function resolveAlert(alertId) {
   }
 }
 
+async function lockFile(fileId) {
+  if (!confirm('Lock this file? Nothing outside this app will be able to open, edit, or delete it until you unlock it here.')) return;
+  try {
+    const response = await apiRequest(`/api/files/${fileId}/lock`, { method: 'POST' });
+    showToast(response.message || 'File locked.');
+    await loadDashboardData();
+  } catch (error) {
+    console.error('Lock failed:', error);
+    showToast(error.message || 'Could not lock file', 'error');
+  }
+}
+
+async function unlockFile(fileId) {
+  try {
+    const response = await apiRequest(`/api/files/${fileId}/unlock`, { method: 'POST' });
+    showToast(response.message || 'File unlocked.');
+    await loadDashboardData();
+  } catch (error) {
+    console.error('Unlock failed:', error);
+    showToast(error.message || 'Could not unlock file', 'error');
+  }
+}
+
 async function reverseFile(fileId) {
   if (!confirm('This will overwrite the current file with its last known-good version. Continue?')) return;
 
@@ -519,18 +546,21 @@ function renderDashboard() {
 
       row.innerHTML = `
         <td>
-          <strong>${file.name}</strong><br />
+          <strong>${file.name}</strong>${file.locked ? ' <span class="status-pill" style="background: rgba(90, 82, 72, 0.15); color: var(--text-secondary);">🔒 Locked</span>' : ''}<br />
           <small style="color: var(--muted); font-size: 0.75rem;">${file.path || ''}</small>
         </td>
         <td><code style="background: var(--surface-3); padding: 4px 8px; border-radius: 6px; font-size: 0.8rem;">${hashToShow.slice(0, 18)}${hashToShow.length > 18 ? '...' : ''}</code></td>
         <td>
-          <span class="status-pill ${getFileStatusClass(file.status)}">${file.status || 'monitoring'}</span>
+          <span class="status-pill ${getFileStatusClass(file.status)}">${file.locked ? 'locked' : (file.status || 'monitoring')}</span>
         </td>
         <td>${formatTime(file.last_checked)}</td>
         <td>
           <div class="row-actions">
-            ${file.status && file.status !== 'monitoring' ? `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="event.stopPropagation(); reverseFile(${file.id})">Reverse</button>` : ''}
-            <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem;" onclick="event.stopPropagation(); simulateChange(${file.id})">Simulate</button>
+            ${file.status && file.status !== 'monitoring' && !file.locked ? `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="event.stopPropagation(); reverseFile(${file.id})">Reverse</button>` : ''}
+            ${file.locked
+              ? `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(212, 163, 115, 0.15); color: var(--accent-2);" onclick="event.stopPropagation(); unlockFile(${file.id})">Unlock</button>`
+              : `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem;" onclick="event.stopPropagation(); lockFile(${file.id})">Lock</button>`}
+            <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem;" onclick="event.stopPropagation(); simulateChange(${file.id})" ${file.locked ? 'disabled' : ''}>Simulate</button>
             <button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="event.stopPropagation(); deleteFile(${file.id})">Delete</button>
           </div>
         </td>
@@ -639,7 +669,11 @@ loginForm.addEventListener('submit', async (event) => {
   const password = document.getElementById('loginPassword').value;
 
   if (!email || !password) {
-    showToast('Please fill in all fields', 'error');
+    showToast('Please enter both your email and password.', 'error');
+    return;
+  }
+  if (!isValidEmail(email)) {
+    showToast('That email address doesn\'t look valid. Please check it and try again.', 'error');
     return;
   }
 
@@ -653,10 +687,10 @@ loginForm.addEventListener('submit', async (event) => {
     saveState();
     await startMonitoringBackend();
     showDashboard();
-    showToast('Login successful!');
+    showToast('Login successful! Welcome back.');
   } catch (error) {
     console.error('Login error:', error);
-    showToast(error.message || 'Login failed', 'error');
+    showToast(error.message || 'Login failed. Please check your details and try again.', 'error');
   }
 });
 
@@ -668,7 +702,15 @@ registerForm.addEventListener('submit', async (event) => {
   const password = document.getElementById('registerPassword').value;
 
   if (!name || !email || !password) {
-    showToast('Please fill in all fields', 'error');
+    showToast('Please fill in your name, email, and password.', 'error');
+    return;
+  }
+  if (!isValidEmail(email)) {
+    showToast('That email address doesn\'t look valid. Please check it and try again.', 'error');
+    return;
+  }
+  if (password.length < 6) {
+    showToast('Your password needs to be at least 6 characters long.', 'error');
     return;
   }
 
@@ -691,7 +733,7 @@ registerForm.addEventListener('submit', async (event) => {
     saveState();
     await startMonitoringBackend();
     showDashboard();
-    showToast('Registration successful!');
+    showToast('Registration successful! Welcome in.');
   } catch (error) {
     console.error('Registration error:', error);
     showToast(error.message || 'Registration failed', 'error');

@@ -793,6 +793,60 @@ button {
   transition: var(--transition);
 }
 
+/* ===== Toast notifications ===== */
+@keyframes slideIn {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.app-toast {
+  position: fixed;
+  bottom: 30px;
+  right: 30px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-light);
+  border-left: 4px solid var(--green-dark);
+  box-shadow: var(--shadow-medium);
+  z-index: 9999;
+  max-width: 400px;
+  font-size: 0.95rem;
+  animation: slideIn 0.25s ease;
+}
+
+.app-toast-error {
+  border-left-color: var(--red-dark);
+}
+
+.app-toast-icon {
+  flex-shrink: 0;
+}
+
+.app-toast-text {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.app-toast-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0 0 8px;
+  flex-shrink: 0;
+}
+
+.app-toast-close:hover {
+  color: var(--text-primary);
+}
+
 .theme-toggle-btn:hover {
   background: var(--bg-card-hover);
   transform: scale(1.05);
