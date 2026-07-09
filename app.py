@@ -542,7 +542,12 @@ def register():
 
     user = body.get("user") or body  # Supabase sometimes returns the user object directly
     user_id = user.get("id")
-    has_session = bool(body.get("access_token"))
+    # Session data can come back flat at the top level, or nested under a
+    # "session" key, depending on the API response shape - check both
+    # rather than assuming one, since guessing wrong here silently sends
+    # confirmed users to an unnecessary "verify your email" screen.
+    session_obj = body.get("session") or {}
+    has_session = bool(body.get("access_token") or session_obj.get("access_token"))
 
     if not user_id:
         return jsonify({"success": False, "message": "Registration failed. Please try again."}), 400

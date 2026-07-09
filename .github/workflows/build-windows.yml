@@ -30,3 +30,13 @@ jobs:
         with:
           name: IntegrityMonitor-windows
           path: dist/IntegrityMonitor.exe
+
+      - name: Publish to latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: Automatically built from the latest push to main.
+          files: dist/IntegrityMonitor.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
