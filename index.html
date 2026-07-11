@@ -262,6 +262,37 @@
             <li class="empty-state">No alerts yet</li>
           </ul>
         </div>
+
+        <div class="panel" id="cloudPanel">
+          <div class="table-header"><h4>☁️ Cloud Backup</h4></div>
+
+          <div id="cloudSubscribeSection">
+            <p class="field-hint" style="margin-bottom: 12px;">Cloud backup is a paid feature. Choose a plan to get started.</p>
+            <div class="row-actions" style="margin-bottom: 8px;">
+              <button class="ghost-btn" data-plan="2month">2 months - $5</button>
+              <button class="ghost-btn" data-plan="5month">5 months - $10</button>
+              <button class="ghost-btn" data-plan="1year">1 year - $25</button>
+            </div>
+          </div>
+
+          <div id="cloudActiveSection" class="hidden">
+            <p class="field-hint" id="cloudPlanLabel" style="margin-bottom: 12px;"></p>
+
+            <div id="cloudConnectSection">
+              <button id="connectGoogleDriveBtn" class="ghost-btn">Connect Google Drive</button>
+            </div>
+
+            <div id="cloudBackupSection" class="hidden">
+              <p class="field-hint" style="color: var(--green-dark); margin-bottom: 12px;">✓ Google Drive connected</p>
+              <button id="backupFileBtn" class="ghost-btn">Back Up a File…</button>
+
+              <div class="table-header" style="margin-top: 20px;"><h4 style="font-size: 0.95rem;">Backed Up Files</h4></div>
+              <ul id="cloudBackupList" class="user-list">
+                <li class="empty-state">No backups yet</li>
+              </ul>
+            </div>
+          </div>
+        </div>
       </aside>
     </div>
   </section>

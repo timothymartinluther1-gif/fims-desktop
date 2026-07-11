@@ -8,7 +8,7 @@ import time
 import getpass
 import socket
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 import requests # type: ignore
@@ -22,6 +22,55 @@ from flask_cors import CORS # type: ignore
 # and must only ever live on a server you control, never in distributed code.
 SUPABASE_URL = "https://goqdtnudjcomwvqbwidt.supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdvcWR0bnVkamNvbXd2cWJ3aWR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODMxNTE0NjgsImV4cCI6MjA5ODcyNzQ2OH0.3Ih5Dst0wnVmJNxaUZmjpVEW1j1EoxskTNgawh6unhM"
+
+# ===== Secure Cloud Recovery Module: Google Drive =====
+# The client secret for a "Desktop app" OAuth client is not treated as
+# confidential by Google's own security model (installed apps can't keep
+# secrets truly secret since they ship in the binary) - this is a
+# different, lower-stakes category than the Supabase DB password, and
+# embedding it here matches Google's documented pattern for this client type.
+def _load_secret(placeholder_name: str, ci_placeholder: str) -> str:
+    """Resolves a secret three ways, in order:
+    1. The CI build step replaces __TOKEN__ with the real value from
+       GitHub's encrypted Actions secrets, baked into the compiled .exe -
+       so if this still says "__..._​_" we're not running a CI build.
+    2. A local, git-ignored local_secrets.py (see local_secrets.py.example)
+       - for testing on your own machine without needing a CI build.
+    3. Empty string, so the app still runs (with that one feature disabled)
+       instead of crashing when a key just isn't configured yet.
+    """
+    if not ci_placeholder.startswith("__"):
+        return ci_placeholder  # already replaced by the CI build step
+    try:
+        import local_secrets
+        return getattr(local_secrets, placeholder_name, "")
+    except ImportError:
+        return ""
+
+
+GOOGLE_CLIENT_ID = _load_secret("GOOGLE_CLIENT_ID", "__GOOGLE_CLIENT_ID__")
+GOOGLE_CLIENT_SECRET = _load_secret("GOOGLE_CLIENT_SECRET", "__GOOGLE_CLIENT_SECRET__")
+GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+
+# ===== Secure Cloud Recovery Module: Paystack =====
+# PAYSTACK_SECRET_KEY must NEVER be sent to the frontend/JS - it's only
+# ever used here, server-side, exactly like the Supabase DB password
+# situation earlier. PAYSTACK_PUBLIC_KEY is safe to expose if ever needed
+# client-side, but our flow doesn't require the frontend to see either one.
+PAYSTACK_SECRET_KEY = _load_secret("PAYSTACK_SECRET_KEY", "__PAYSTACK_SECRET_KEY__")
+PAYSTACK_PUBLIC_KEY = _load_secret("PAYSTACK_PUBLIC_KEY", "__PAYSTACK_PUBLIC_KEY__")
+
+# Paystack test keys only process test-mode payments (no real money moves)
+# until they're swapped for live keys later.
+SUBSCRIPTION_PLANS = {
+    "2month": {"label": "2 Months", "amount_usd": 5, "days": 60},
+    "5month": {"label": "5 Months", "amount_usd": 10, "days": 150},
+    "1year": {"label": "1 Year", "amount_usd": 25, "days": 365},
+}
+
+# The administrator gets permanent premium access to all cloud features,
+# per the module spec - no subscription required.
+ADMIN_EMAIL = "timothymartinluther54@gmail.com"
 
 
 def supabase_signup(email: str, password: str, name: str) -> tuple[bool, dict]:
@@ -138,6 +187,232 @@ def supabase_error_message(body: dict) -> str:
     if "password" in lowered and ("least" in lowered or "short" in lowered or "weak" in lowered):
         return msg or "Password does not meet requirements (minimum 6 characters)."
     return msg or "Something went wrong. Please try again."
+
+
+# ===== Secure Cloud Recovery Module =====
+
+def get_backup_encryption_key(user_id: str) -> Optional[bytes]:
+    """Fetches the user's per-account encryption key from Supabase
+    user_metadata. Deliberately NOT derived from their password - if it
+    were, resetting the password (a feature we already built) would
+    permanently destroy access to every encrypted backup with no way back.
+    Generating and storing a separate random key avoids that trap.
+    """
+    from cryptography.fernet import Fernet
+
+    token_row = get_cloud_token(user_id, "supabase")
+    if not token_row:
+        return None
+
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {token_row['access_token']}"},
+            timeout=15,
+        )
+        if not resp.ok:
+            return None
+        user_data = resp.json()
+        existing_key = (user_data.get("user_metadata") or {}).get("backup_key")
+        if existing_key:
+            return existing_key.encode("utf-8")
+
+        # No key yet - generate one and persist it to this account.
+        new_key = Fernet.generate_key()
+        put_resp = requests.put(
+            f"{SUPABASE_URL}/auth/v1/user",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {token_row['access_token']}",
+                "Content-Type": "application/json",
+            },
+            json={"data": {"backup_key": new_key.decode("utf-8")}},
+            timeout=15,
+        )
+        if not put_resp.ok:
+            print(f"[cloud] failed to persist new backup key: {put_resp.text}", flush=True)
+            return None
+        return new_key
+    except requests.RequestException as exc:
+        print(f"[cloud] get_backup_encryption_key error: {exc!r}", flush=True)
+        return None
+
+
+def encrypt_bytes(data: bytes, key: bytes) -> bytes:
+    from cryptography.fernet import Fernet
+    return Fernet(key).encrypt(data)
+
+
+def decrypt_bytes(data: bytes, key: bytes) -> bytes:
+    from cryptography.fernet import Fernet
+    return Fernet(key).decrypt(data)
+
+
+# ----- Google Drive -----
+
+def google_auth_url(redirect_uri: str) -> str:
+    from urllib.parse import urlencode
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": GOOGLE_DRIVE_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    return f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+
+
+def google_exchange_code(code: str, redirect_uri: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": redirect_uri,
+            },
+            timeout=15,
+        )
+        return resp.ok, resp.json()
+    except requests.RequestException as exc:
+        return False, {"error": str(exc)}
+
+
+def google_refresh_token(refresh_token: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": GOOGLE_CLIENT_ID,
+                "client_secret": GOOGLE_CLIENT_SECRET,
+                "refresh_token": refresh_token,
+                "grant_type": "refresh_token",
+            },
+            timeout=15,
+        )
+        return resp.ok, resp.json()
+    except requests.RequestException as exc:
+        return False, {"error": str(exc)}
+
+
+def get_valid_google_token(user_id: str) -> Optional[str]:
+    """Returns a usable Google access token, transparently refreshing it
+    first if it has expired."""
+    token_row = get_cloud_token(user_id, "google")
+    if not token_row:
+        return None
+
+    expires_at = token_row.get("expires_at")
+    if expires_at:
+        try:
+            if datetime.fromisoformat(expires_at) > datetime.utcnow():
+                return token_row["access_token"]
+        except ValueError:
+            pass
+
+    if not token_row.get("refresh_token"):
+        return None
+
+    ok, body = google_refresh_token(token_row["refresh_token"])
+    if not ok:
+        print(f"[cloud] Google token refresh failed: {body}", flush=True)
+        return None
+
+    save_cloud_token(user_id, "google", body["access_token"], token_row.get("refresh_token"), body.get("expires_in"))
+    return body["access_token"]
+
+
+def google_drive_upload(access_token: str, filename: str, encrypted_bytes: bytes) -> tuple[bool, dict]:
+    import json as json_lib
+    boundary = "fims_cloud_boundary"
+    metadata = json_lib.dumps({"name": filename, "parents": []})
+    body = (
+        f"--{boundary}\r\n"
+        f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+        f"{metadata}\r\n"
+        f"--{boundary}\r\n"
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode("utf-8") + encrypted_bytes + f"\r\n--{boundary}--".encode("utf-8")
+
+    try:
+        resp = requests.post(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": f"multipart/related; boundary={boundary}",
+            },
+            data=body,
+            timeout=60,
+        )
+        return resp.ok, resp.json()
+    except requests.RequestException as exc:
+        return False, {"error": str(exc)}
+
+
+def google_drive_download(access_token: str, file_id: str) -> tuple[bool, bytes]:
+    try:
+        resp = requests.get(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=60,
+        )
+        return resp.ok, resp.content
+    except requests.RequestException as exc:
+        return False, str(exc).encode("utf-8")
+
+
+# ----- Paystack -----
+
+def paystack_initialize(email: str, amount_usd: float, plan_key: str, callback_url: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            "https://api.paystack.co/transaction/initialize",
+            headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}", "Content-Type": "application/json"},
+            json={
+                "email": email,
+                "amount": int(amount_usd * 100),  # smallest currency unit (cents)
+                "currency": "USD",
+                "callback_url": callback_url,
+                "metadata": {"plan": plan_key},
+            },
+            timeout=15,
+        )
+        return resp.ok, resp.json()
+    except requests.RequestException as exc:
+        return False, {"message": str(exc)}
+
+
+def paystack_verify(reference: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.get(
+            f"https://api.paystack.co/transaction/verify/{reference}",
+            headers={"Authorization": f"Bearer {PAYSTACK_SECRET_KEY}"},
+            timeout=15,
+        )
+        return resp.ok, resp.json()
+    except requests.RequestException as exc:
+        return False, {"message": str(exc)}
+
+
+def is_subscription_active(user_id: str, email: str = None) -> bool:
+    if email and email.lower() == ADMIN_EMAIL.lower():
+        return True  # Admin has permanent access, per spec
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM subscriptions WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row or row["status"] != "active" or not row["expires_at"]:
+        return False
+    try:
+        return datetime.fromisoformat(row["expires_at"]) > datetime.utcnow()
+    except ValueError:
+        return False
 
 
 def resource_path() -> Path:
@@ -316,14 +591,13 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
             """
             CREATE TABLE alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
                 file_id INTEGER NOT NULL,
                 file_name TEXT NOT NULL,
                 previous_hash TEXT NOT NULL,
                 new_hash TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
                 resolved INTEGER DEFAULT 0,
-                FOREIGN KEY(user_id) REFERENCES users(id),
                 FOREIGN KEY(file_id) REFERENCES files(id)
             )
             """
@@ -406,6 +680,39 @@ def init_db():
             resolved INTEGER DEFAULT 0,
             FOREIGN KEY(file_id) REFERENCES files(id)
         );
+
+        CREATE TABLE IF NOT EXISTS cloud_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            provider TEXT NOT NULL,  -- 'supabase', 'google', 'onedrive', 's3'
+            access_token TEXT NOT NULL,
+            refresh_token TEXT,
+            expires_at TEXT,
+            UNIQUE(user_id, provider)
+        );
+
+        CREATE TABLE IF NOT EXISTS cloud_backups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            original_path TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            remote_file_id TEXT NOT NULL,
+            trusted_hash TEXT NOT NULL,
+            encrypted_size INTEGER,
+            backed_up_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL UNIQUE,
+            email TEXT,
+            plan TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'inactive',
+            activated_at TEXT,
+            expires_at TEXT,
+            last_reference TEXT
+        );
         """
     )
     migrate_schema(conn)
@@ -466,6 +773,40 @@ def get_session_info() -> dict:
     return info
 
 
+def save_cloud_token(user_id: str, provider: str, access_token: str, refresh_token: str = None, expires_in: int = None) -> None:
+    expires_at = None
+    if expires_in:
+        expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat(timespec="seconds")
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO cloud_tokens (user_id, provider, access_token, refresh_token, expires_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, provider) DO UPDATE SET
+            access_token = excluded.access_token,
+            refresh_token = COALESCE(excluded.refresh_token, cloud_tokens.refresh_token),
+            expires_at = excluded.expires_at
+        """,
+        (user_id, provider, access_token, refresh_token, expires_at),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_cloud_token(user_id: str, provider: str) -> Optional[dict]:
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM cloud_tokens WHERE user_id = ? AND provider = ?",
+        (user_id, provider),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row_to_dict(row) if row else None
+
+
 def now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds")
 
@@ -474,9 +815,20 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+_db_ready = False
+
+
 @app.before_request
 def ensure_db():
-    init_db()
+    # init_db() already runs once at startup (in both desktop_app.py and
+    # app.py's __main__ block). Re-running its migration checks on every
+    # single request added needless latency to every API call, including
+    # login. This guard keeps the safety net (in case something calls the
+    # app without that startup step) without paying the cost every time.
+    global _db_ready
+    if not _db_ready:
+        init_db()
+        _db_ready = True
 
 
 @app.errorhandler(Exception)
@@ -553,6 +905,13 @@ def register():
         return jsonify({"success": False, "message": "Registration failed. Please try again."}), 400
 
     if has_session:
+        access_token = body.get("access_token") or session_obj.get("access_token")
+        if access_token:
+            save_cloud_token(
+                user_id, "supabase", access_token,
+                body.get("refresh_token") or session_obj.get("refresh_token"),
+                body.get("expires_in") or session_obj.get("expires_in"),
+            )
         return jsonify({
             "success": True,
             "message": "Account created successfully.",
@@ -585,6 +944,10 @@ def verify_signup():
         return jsonify({"success": False, "message": "Verification failed. Please try again."}), 400
 
     name = (user.get("user_metadata") or {}).get("name") or email.split("@")[0]
+
+    access_token = body.get("access_token")
+    if access_token:
+        save_cloud_token(user_id, "supabase", access_token, body.get("refresh_token"), body.get("expires_in"))
 
     return jsonify({
         "success": True,
@@ -655,6 +1018,13 @@ def login():
         return jsonify({"success": False, "message": "Login failed. Please try again."}), 401
 
     name = (user.get("user_metadata") or {}).get("name") or user.get("email", "").split("@")[0]
+
+    access_token = body.get("access_token")
+    if access_token:
+        save_cloud_token(
+            user_id, "supabase", access_token,
+            body.get("refresh_token"), body.get("expires_in"),
+        )
 
     return jsonify({
         "success": True,
@@ -1082,6 +1452,312 @@ def unlock_file(file_id):
     conn.close()
 
     return jsonify({"success": True, "message": "File unlocked. Monitoring resumes normally."})
+
+
+# ===== Secure Cloud Recovery Module: routes =====
+
+# ===== Secure Cloud Recovery Module: routes =====
+
+_pending_google_auth_user = None
+
+
+@app.route('/api/cloud/google/connect', methods=['POST'])
+def cloud_google_connect():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    redirect_uri = f"{request.host_url.rstrip('/')}/oauth/google/callback"
+    auth_url = google_auth_url(redirect_uri)
+
+    try:
+        import webbrowser
+        webbrowser.open(auth_url)
+    except Exception as exc:
+        return jsonify({"success": False, "message": f"Could not open browser: {exc}"}), 500
+
+    # Stash which user is completing this flow, since the callback request
+    # itself carries no user identity - only Google's redirect does.
+    global _pending_google_auth_user
+    _pending_google_auth_user = user_id
+
+    return jsonify({
+        "success": True,
+        "message": "Continue in your browser to connect Google Drive, then come back to this app.",
+    })
+
+
+@app.route('/oauth/google/callback', methods=['GET'])
+def oauth_google_callback():
+    error = request.args.get('error')
+    code = request.args.get('code')
+
+    if error or not code:
+        return "<h2>Google Drive connection failed.</h2><p>You can close this tab and try again from the app.</p>", 400
+
+    if not _pending_google_auth_user:
+        return "<h2>No pending connection found.</h2><p>Please start connecting Google Drive from the app again.</p>", 400
+
+    redirect_uri = f"{request.host_url.rstrip('/')}/oauth/google/callback"
+    ok, body = google_exchange_code(code, redirect_uri)
+    if not ok:
+        print(f"[cloud] Google token exchange failed: {body}", flush=True)
+        return "<h2>Google Drive connection failed.</h2><p>You can close this tab and try again from the app.</p>", 400
+
+    save_cloud_token(
+        _pending_google_auth_user, "google",
+        body["access_token"], body.get("refresh_token"), body.get("expires_in"),
+    )
+
+    return "<h2>Google Drive connected!</h2><p>You can close this tab and return to the app.</p>"
+
+
+@app.route('/api/cloud/google/status', methods=['GET'])
+def cloud_google_status():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    token_row = get_cloud_token(user_id, "google")
+    return jsonify({"success": True, "connected": token_row is not None})
+
+
+@app.route('/api/cloud/backup', methods=['POST'])
+def cloud_backup():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    file_path = data.get('file_path')
+    email = data.get('email')
+
+    if not user_id or not file_path:
+        return jsonify({"success": False, "message": "user_id and file_path are required."}), 400
+
+    if not is_subscription_active(user_id, email):
+        return jsonify({"success": False, "message": "Cloud backup requires an active subscription.", "requires_subscription": True}), 402
+
+    access_token = get_valid_google_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Google Drive isn't connected. Connect it first."}), 400
+
+    encryption_key = get_backup_encryption_key(user_id)
+    if not encryption_key:
+        return jsonify({"success": False, "message": "Could not access your backup encryption key. Please log out and back in, then try again."}), 400
+
+    path = Path(file_path)
+    try:
+        original_bytes = path.read_bytes()
+    except OSError as exc:
+        return jsonify({"success": False, "message": f"Could not read the file: {exc}"}), 400
+
+    trusted_hash = compute_hash(original_bytes)
+    encrypted_bytes = encrypt_bytes(original_bytes, encryption_key)
+
+    ok, result = google_drive_upload(access_token, path.name + ".fimsbackup", encrypted_bytes)
+    if not ok:
+        return jsonify({"success": False, "message": f"Upload failed: {result}"}), 400
+
+    remote_file_id = result.get("id")
+    timestamp = now_iso()
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO cloud_backups (user_id, original_name, original_path, provider, remote_file_id, trusted_hash, encrypted_size, backed_up_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (user_id, path.name, str(path), "google", remote_file_id, trusted_hash, len(encrypted_bytes), timestamp),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": f"{path.name} backed up to Google Drive."})
+
+
+@app.route('/api/cloud/backups', methods=['GET'])
+def cloud_backups_list():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM cloud_backups WHERE user_id = ? ORDER BY id DESC",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return jsonify({"success": True, "backups": [row_to_dict(row) for row in rows]})
+
+
+@app.route('/api/cloud/restore', methods=['POST'])
+def cloud_restore():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    backup_id = data.get('backup_id')
+    destination_path = data.get('destination_path')
+    email = data.get('email')
+
+    if not user_id or not backup_id or not destination_path:
+        return jsonify({"success": False, "message": "user_id, backup_id, and destination_path are required."}), 400
+
+    if not is_subscription_active(user_id, email):
+        return jsonify({"success": False, "message": "Cloud recovery requires an active subscription.", "requires_subscription": True}), 402
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM cloud_backups WHERE id = ? AND user_id = ?", (backup_id, user_id))
+    backup_row = cursor.fetchone()
+    conn.close()
+
+    if not backup_row:
+        return jsonify({"success": False, "message": "Backup not found."}), 404
+
+    access_token = get_valid_google_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Google Drive isn't connected."}), 400
+
+    encryption_key = get_backup_encryption_key(user_id)
+    if not encryption_key:
+        return jsonify({"success": False, "message": "Could not access your backup encryption key."}), 400
+
+    ok, content = google_drive_download(access_token, backup_row["remote_file_id"])
+    if not ok:
+        return jsonify({"success": False, "message": f"Download failed: {content}"}), 400
+
+    try:
+        decrypted_bytes = decrypt_bytes(content, encryption_key)
+    except Exception as exc:
+        return jsonify({"success": False, "message": f"Could not decrypt the backup: {exc}"}), 400
+
+    restored_hash = compute_hash(decrypted_bytes)
+    if restored_hash != backup_row["trusted_hash"]:
+        return jsonify({"success": False, "message": "Restored file doesn't match its recorded hash - aborting to avoid restoring corrupted data."}), 400
+
+    try:
+        dest = Path(destination_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(decrypted_bytes)
+    except OSError as exc:
+        return jsonify({"success": False, "message": f"Could not write the restored file: {exc}"}), 400
+
+    return jsonify({"success": True, "message": f"Restored to {destination_path}."})
+
+
+# ===== Secure Cloud Recovery Module: Subscription Manager =====
+
+@app.route('/api/subscription/plans', methods=['GET'])
+def subscription_plans():
+    return jsonify({"success": True, "plans": SUBSCRIPTION_PLANS})
+
+
+@app.route('/api/subscription/status', methods=['GET'])
+def subscription_status():
+    user_id = request.args.get('user_id')
+    email = request.args.get('email')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    if email and email.lower() == ADMIN_EMAIL.lower():
+        return jsonify({"success": True, "active": True, "plan": "admin", "expires_at": None, "is_admin": True})
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM subscriptions WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+
+    if not row:
+        return jsonify({"success": True, "active": False, "plan": None, "expires_at": None})
+
+    active = is_subscription_active(user_id, email)
+    return jsonify({
+        "success": True,
+        "active": active,
+        "plan": row["plan"],
+        "expires_at": row["expires_at"],
+    })
+
+
+_pending_paystack_user = {}  # reference -> {user_id, plan_key}
+
+
+@app.route('/api/subscribe', methods=['POST'])
+def subscribe():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    email = data.get('email')
+    plan_key = data.get('plan')
+
+    if not user_id or not email or not plan_key:
+        return jsonify({"success": False, "message": "user_id, email, and plan are required."}), 400
+    if plan_key not in SUBSCRIPTION_PLANS:
+        return jsonify({"success": False, "message": "Unknown plan."}), 400
+
+    plan = SUBSCRIPTION_PLANS[plan_key]
+    callback_url = f"{request.host_url.rstrip('/')}/payment/paystack/callback"
+
+    ok, body = paystack_initialize(email, plan["amount_usd"], plan_key, callback_url)
+    if not ok or not body.get("status"):
+        return jsonify({"success": False, "message": f"Could not start payment: {body.get('message', body)}"}), 400
+
+    reference = body["data"]["reference"]
+    authorization_url = body["data"]["authorization_url"]
+    _pending_paystack_user[reference] = {"user_id": user_id, "plan_key": plan_key}
+
+    try:
+        import webbrowser
+        webbrowser.open(authorization_url)
+    except Exception as exc:
+        return jsonify({"success": False, "message": f"Could not open browser: {exc}"}), 500
+
+    return jsonify({
+        "success": True,
+        "message": "Continue in your browser to complete payment, then come back to this app.",
+    })
+
+
+@app.route('/payment/paystack/callback', methods=['GET'])
+def paystack_callback():
+    reference = request.args.get('reference')
+    if not reference:
+        return "<h2>Payment could not be confirmed.</h2><p>No reference was provided. You can close this tab.</p>", 400
+
+    pending = _pending_paystack_user.get(reference)
+    if not pending:
+        return "<h2>Payment session not found.</h2><p>Please start the subscription again from the app.</p>", 400
+
+    ok, body = paystack_verify(reference)
+    if not ok or body.get("data", {}).get("status") != "success":
+        return "<h2>Payment was not successful.</h2><p>You can close this tab and try again from the app.</p>", 400
+
+    plan = SUBSCRIPTION_PLANS[pending["plan_key"]]
+    now = datetime.utcnow()
+    expires_at = (now + timedelta(days=plan["days"])).isoformat(timespec="seconds")
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO subscriptions (user_id, plan, status, activated_at, expires_at, last_reference)
+        VALUES (?, ?, 'active', ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            plan = excluded.plan,
+            status = 'active',
+            activated_at = excluded.activated_at,
+            expires_at = excluded.expires_at,
+            last_reference = excluded.last_reference
+        """,
+        (pending["user_id"], pending["plan_key"], now.isoformat(timespec="seconds"), expires_at, reference),
+    )
+    conn.commit()
+    conn.close()
+    del _pending_paystack_user[reference]
+
+    return "<h2>Subscription activated!</h2><p>You can close this tab and return to the app.</p>"
 
 
 @app.route('/api/status', methods=['GET'])

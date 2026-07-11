@@ -107,6 +107,7 @@ function showDashboard() {
   dashboardPanel.classList.remove('hidden');
   greetingText.textContent = `Welcome back, ${state.currentUser?.name || 'User'}`;
   loadDashboardData();
+  refreshCloudPanel();
   startPolling();
 }
 
@@ -484,6 +485,150 @@ async function unlockFile(fileId) {
   } catch (error) {
     console.error('Unlock failed:', error);
     showToast(error.message || 'Could not unlock file', 'error');
+  }
+}
+
+// ===== Secure Cloud Recovery Module =====
+
+async function refreshCloudPanel() {
+  if (!state.currentUser?.id) return;
+  const { id: userId, email } = state.currentUser;
+
+  const subscribeSection = document.getElementById('cloudSubscribeSection');
+  const activeSection = document.getElementById('cloudActiveSection');
+  const planLabel = document.getElementById('cloudPlanLabel');
+  const connectSection = document.getElementById('cloudConnectSection');
+  const backupSection = document.getElementById('cloudBackupSection');
+
+  try {
+    const statusData = await apiRequest(`/api/subscription/status?user_id=${userId}&email=${encodeURIComponent(email)}`);
+
+    if (!statusData.active) {
+      subscribeSection.classList.remove('hidden');
+      activeSection.classList.add('hidden');
+      return;
+    }
+
+    subscribeSection.classList.add('hidden');
+    activeSection.classList.remove('hidden');
+    planLabel.textContent = statusData.is_admin
+      ? 'Admin — unlimited cloud access'
+      : `Plan: ${statusData.plan} · renews/expires ${formatTime(statusData.expires_at)}`;
+
+    const driveStatus = await apiRequest(`/api/cloud/google/status?user_id=${userId}`);
+    if (driveStatus.connected) {
+      connectSection.classList.add('hidden');
+      backupSection.classList.remove('hidden');
+      await refreshCloudBackupList();
+    } else {
+      connectSection.classList.remove('hidden');
+      backupSection.classList.add('hidden');
+    }
+  } catch (error) {
+    console.error('Failed to refresh cloud panel:', error);
+  }
+}
+
+async function refreshCloudBackupList() {
+  const listEl = document.getElementById('cloudBackupList');
+  try {
+    const data = await apiRequest(`/api/cloud/backups?user_id=${state.currentUser.id}`);
+    const backups = data.backups || [];
+    if (!backups.length) {
+      listEl.innerHTML = '<li class="empty-state">No backups yet</li>';
+      return;
+    }
+    listEl.innerHTML = backups.map((b) => `
+      <li>
+        <div class="row-actions" style="justify-content: space-between;">
+          <div>
+            <strong style="color: var(--text);">${b.original_name}</strong>
+            <div style="color: var(--muted); font-size: 0.78rem;">Backed up ${formatTime(b.backed_up_at)}</div>
+          </div>
+          <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem;" onclick="restoreCloudBackup(${b.id}, '${b.original_name.replace(/'/g, "\\'")}')">Restore</button>
+        </div>
+      </li>
+    `).join('');
+  } catch (error) {
+    console.error('Failed to load cloud backups:', error);
+  }
+}
+
+document.querySelectorAll('#cloudSubscribeSection [data-plan]').forEach((btn) => {
+  btn.addEventListener('click', async () => {
+    try {
+      const response = await apiRequest('/api/subscribe', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: state.currentUser.id,
+          email: state.currentUser.email,
+          plan: btn.dataset.plan,
+        }),
+      });
+      showToast(response.message || 'Continue in your browser to complete payment.');
+    } catch (error) {
+      console.error('Subscribe failed:', error);
+      showToast(error.message || 'Could not start payment', 'error');
+    }
+  });
+});
+
+document.getElementById('connectGoogleDriveBtn')?.addEventListener('click', async () => {
+  try {
+    const response = await apiRequest('/api/cloud/google/connect', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id }),
+    });
+    showToast(response.message || 'Continue in your browser.');
+  } catch (error) {
+    console.error('Connect Google Drive failed:', error);
+    showToast(error.message || 'Could not connect Google Drive', 'error');
+  }
+});
+
+document.getElementById('backupFileBtn')?.addEventListener('click', async () => {
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast('File picking requires the desktop app window.', 'error');
+    return;
+  }
+  try {
+    const filePath = await window.pywebview.api.pick_file();
+    if (!filePath) return;
+    showToast('Encrypting and uploading…');
+    const response = await apiRequest('/api/cloud/backup', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id, email: state.currentUser.email, file_path: filePath }),
+    });
+    showToast(response.message || 'Backed up.');
+    await refreshCloudBackupList();
+  } catch (error) {
+    console.error('Backup failed:', error);
+    showToast(error.message || 'Backup failed', 'error');
+  }
+});
+
+async function restoreCloudBackup(backupId, suggestedName) {
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast('File restore requires the desktop app window.', 'error');
+    return;
+  }
+  try {
+    const destinationPath = await window.pywebview.api.pick_save_location(suggestedName);
+    if (!destinationPath) return;
+    showToast('Downloading and decrypting…');
+    const response = await apiRequest('/api/cloud/restore', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: state.currentUser.id,
+        email: state.currentUser.email,
+        backup_id: backupId,
+        destination_path: destinationPath,
+      }),
+    });
+    showToast(response.message || 'Restored.');
+  } catch (error) {
+    console.error('Restore failed:', error);
+    showToast(error.message || 'Restore failed', 'error');
   }
 }
 

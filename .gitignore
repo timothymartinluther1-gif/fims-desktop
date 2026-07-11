@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+dist/
+build/
+*.spec.bak
+local_secrets.py
+integrity_monitor.db
+integrity_monitor.db-journal

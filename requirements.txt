@@ -2,3 +2,4 @@ Flask
 Flask-CORS
 pywebview
 requests
+cryptography

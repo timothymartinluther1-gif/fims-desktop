@@ -25,6 +25,16 @@ jobs:
           pip install -r requirements.txt
           pip install -r requirements-build.txt
 
+      - name: Inject secrets from GitHub Actions
+        shell: pwsh
+        run: |
+          (Get-Content app.py -Raw) `
+            -replace '__GOOGLE_CLIENT_ID__', '${{ secrets.GOOGLE_CLIENT_ID }}' `
+            -replace '__GOOGLE_CLIENT_SECRET__', '${{ secrets.GOOGLE_CLIENT_SECRET }}' `
+            -replace '__PAYSTACK_SECRET_KEY__', '${{ secrets.PAYSTACK_SECRET_KEY }}' `
+            -replace '__PAYSTACK_PUBLIC_KEY__', '${{ secrets.PAYSTACK_PUBLIC_KEY }}' `
+            | Set-Content app.py -NoNewline
+
       - name: Build exe with PyInstaller
         run: pyinstaller desktop_app.spec
 
