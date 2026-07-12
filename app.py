@@ -364,6 +364,24 @@ def google_drive_download(access_token: str, file_id: str) -> tuple[bool, bytes]
         return False, str(exc).encode("utf-8")
 
 
+def google_drive_storage_quota(access_token: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/drive/v3/about?fields=storageQuota",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        if not resp.ok:
+            return False, {}
+        quota = resp.json().get("storageQuota", {})
+        return True, {
+            "used": int(quota.get("usage", 0)),
+            "limit": int(quota["limit"]) if quota.get("limit") else None,  # None = unlimited plan
+        }
+    except (requests.RequestException, ValueError, KeyError) as exc:
+        return False, {}
+
+
 # ----- Paystack -----
 
 def paystack_initialize(email: str, amount_usd: float, plan_key: str, callback_url: str) -> tuple[bool, dict]:
@@ -1521,6 +1539,44 @@ def cloud_google_status():
 
     token_row = get_cloud_token(user_id, "google")
     return jsonify({"success": True, "connected": token_row is not None})
+
+
+@app.route('/api/cloud/google/quota', methods=['GET'])
+def cloud_google_quota():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    access_token = get_valid_google_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Google Drive isn't connected."}), 400
+
+    ok, quota = google_drive_storage_quota(access_token)
+    if not ok:
+        return jsonify({"success": False, "message": "Could not check storage quota."}), 400
+
+    return jsonify({"success": True, "used": quota["used"], "limit": quota["limit"]})
+
+
+@app.route('/api/auth/confirm-password', methods=['POST'])
+def confirm_password():
+    """Re-checks the account password without changing the current
+    session. Required before any cloud file retrieval, so that if a
+    device is left unlocked or stolen while still logged in, files
+    still can't be pulled down without the password.
+    """
+    data = request.get_json(silent=True) or {}
+    email = (data.get('email') or '').strip().lower()
+    password = data.get('password') or ''
+
+    if not email or not password:
+        return jsonify({"success": False, "message": "Password is required."}), 400
+
+    ok, body = supabase_login(email, password)
+    if not ok:
+        return jsonify({"success": False, "message": "Incorrect password."}), 401
+
+    return jsonify({"success": True, "message": "Confirmed."})
 
 
 @app.route('/api/cloud/backup', methods=['POST'])

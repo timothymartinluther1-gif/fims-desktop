@@ -916,6 +916,38 @@ button {
   color: var(--accent-1);
 }
 
+/* ===== Modals (password confirm, retrieve files) ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(20, 18, 14, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.modal-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-soft);
+  padding: 28px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: var(--shadow-medium);
+}
+
+.retrieve-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.retrieve-item label {
+  flex: 1;
+  cursor: pointer;
+}
+
 /* ===== Action button rows (file table, alerts) ===== */
 .row-actions {
   display: flex;

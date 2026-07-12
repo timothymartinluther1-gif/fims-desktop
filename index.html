@@ -202,12 +202,12 @@
           <div class="panel-header"><h4>Add a file</h4></div>
           <form id="uploadForm">
             <div class="field-group">
-              <label for="filePathInput">File to monitor (live — detects real edits/moves)</label>
+              <label for="filePathInput">File to monitor (live, detects real edits or moves)</label>
               <div class="path-row">
                 <input type="text" id="filePathInput" placeholder="C:\path\to\file.txt" />
                 <button type="button" id="browseBtn" class="ghost-btn">Browse…</button>
               </div>
-              <small id="browseHint" class="field-hint hidden">Native browse isn't available in this view — type or paste the full path instead.</small>
+              <small id="browseHint" class="field-hint hidden">Native browse isn't available in this view. Type or paste the full path instead.</small>
             </div>
 
             <details class="upload-fallback">
@@ -283,8 +283,13 @@
             </div>
 
             <div id="cloudBackupSection" class="hidden">
-              <p class="field-hint" style="color: var(--green-dark); margin-bottom: 12px;">✓ Google Drive connected</p>
-              <button id="backupFileBtn" class="ghost-btn">Back Up a File…</button>
+              <p class="field-hint" style="color: var(--green-dark); margin-bottom: 4px;">Google Drive connected.</p>
+              <p class="field-hint" id="cloudQuotaLabel" style="margin-bottom: 12px;"></p>
+
+              <div class="row-actions" style="margin-bottom: 8px;">
+                <button id="backupFileBtn" class="ghost-btn">Back Up a File</button>
+                <button id="retrieveFilesBtn" class="ghost-btn">Retrieve Files</button>
+              </div>
 
               <div class="table-header" style="margin-top: 20px;"><h4 style="font-size: 0.95rem;">Backed Up Files</h4></div>
               <ul id="cloudBackupList" class="user-list">
@@ -294,6 +299,38 @@
           </div>
         </div>
       </aside>
+
+      <!-- Password re-confirmation, required before any file retrieval -->
+      <div id="passwordConfirmOverlay" class="modal-overlay hidden">
+        <div class="modal-card">
+          <h4>Confirm your password</h4>
+          <p class="field-hint" style="margin-bottom: 16px;">For your security, retrieving files requires re-entering your account password.</p>
+          <div class="field-group">
+            <input type="password" id="passwordConfirmInput" placeholder="Password" autocomplete="current-password" />
+          </div>
+          <div class="row-actions" style="margin-top: 12px; justify-content: flex-end;">
+            <button id="passwordConfirmCancelBtn" class="ghost-btn">Cancel</button>
+            <button id="passwordConfirmSubmitBtn" class="submit-btn" style="width: auto; padding: 10px 20px;">Confirm</button>
+          </div>
+          <button type="button" id="passwordConfirmForgotBtn" class="link-btn">Forgot password?</button>
+        </div>
+      </div>
+
+      <!-- Retrieve: multi-select from the full backup list -->
+      <div id="retrieveModalOverlay" class="modal-overlay hidden">
+        <div class="modal-card">
+          <h4>Retrieve Files</h4>
+          <p class="field-hint" style="margin-bottom: 12px;">Select the files you want to bring back, then choose where to save them.</p>
+          <label class="field-hint" style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+            <input type="checkbox" id="retrieveSelectAll" /> Select all
+          </label>
+          <ul id="retrieveFileList" class="user-list" style="max-height: 280px; overflow-y: auto;"></ul>
+          <div class="row-actions" style="margin-top: 16px; justify-content: flex-end;">
+            <button id="retrieveCancelBtn" class="ghost-btn">Cancel</button>
+            <button id="retrieveConfirmBtn" class="submit-btn" style="width: auto; padding: 10px 20px;">Restore Selected</button>
+          </div>
+        </div>
+      </div>
     </div>
   </section>
 

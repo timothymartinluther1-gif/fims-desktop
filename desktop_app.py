@@ -116,6 +116,17 @@ class Api:
             return None
         return result if isinstance(result, str) else result[0]
 
+    def pick_folder(self):
+        """Used when restoring multiple backups at once - lets the user
+        choose one destination folder for all selected files."""
+        try:
+            result = webview.windows[0].create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception:
+            return None
+        if not result:
+            return None
+        return result if isinstance(result, str) else result[0]
+
 
 def main() -> None:
     host = "127.0.0.1"

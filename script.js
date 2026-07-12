@@ -10,6 +10,7 @@ const state = {
   selectedFileId: null,
   selectedFileHistory: [],
   fileFilter: 'all', // 'all' | 'monitoring' | 'tampered'
+  cloudBackups: [],
   stats: {
     files: 0,
     alerts: 0,
@@ -512,7 +513,7 @@ async function refreshCloudPanel() {
     subscribeSection.classList.add('hidden');
     activeSection.classList.remove('hidden');
     planLabel.textContent = statusData.is_admin
-      ? 'Admin — unlimited cloud access'
+      ? 'Admin plan: unlimited cloud access'
       : `Plan: ${statusData.plan} · renews/expires ${formatTime(statusData.expires_at)}`;
 
     const driveStatus = await apiRequest(`/api/cloud/google/status?user_id=${userId}`);
@@ -520,6 +521,7 @@ async function refreshCloudPanel() {
       connectSection.classList.add('hidden');
       backupSection.classList.remove('hidden');
       await refreshCloudBackupList();
+      await refreshCloudQuota();
     } else {
       connectSection.classList.remove('hidden');
       backupSection.classList.add('hidden');
@@ -529,24 +531,39 @@ async function refreshCloudPanel() {
   }
 }
 
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
+}
+
+async function refreshCloudQuota() {
+  const quotaLabel = document.getElementById('cloudQuotaLabel');
+  try {
+    const quota = await apiRequest(`/api/cloud/google/quota?user_id=${state.currentUser.id}`);
+    quotaLabel.textContent = quota.limit
+      ? `Google Drive storage: ${formatBytes(quota.used)} of ${formatBytes(quota.limit)} used`
+      : `Google Drive storage: ${formatBytes(quota.used)} used (unlimited plan)`;
+  } catch (error) {
+    quotaLabel.textContent = '';
+  }
+}
+
 async function refreshCloudBackupList() {
   const listEl = document.getElementById('cloudBackupList');
   try {
     const data = await apiRequest(`/api/cloud/backups?user_id=${state.currentUser.id}`);
     const backups = data.backups || [];
+    state.cloudBackups = backups;
     if (!backups.length) {
       listEl.innerHTML = '<li class="empty-state">No backups yet</li>';
       return;
     }
     listEl.innerHTML = backups.map((b) => `
       <li>
-        <div class="row-actions" style="justify-content: space-between;">
-          <div>
-            <strong style="color: var(--text);">${b.original_name}</strong>
-            <div style="color: var(--muted); font-size: 0.78rem;">Backed up ${formatTime(b.backed_up_at)}</div>
-          </div>
-          <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem;" onclick="restoreCloudBackup(${b.id}, '${b.original_name.replace(/'/g, "\\'")}')">Restore</button>
-        </div>
+        <strong style="color: var(--text);">${b.original_name}</strong>
+        <div style="color: var(--muted); font-size: 0.78rem;">Backed up ${formatTime(b.backed_up_at)}</div>
       </li>
     `).join('');
   } catch (error) {
@@ -591,46 +608,148 @@ document.getElementById('backupFileBtn')?.addEventListener('click', async () => 
     showToast('File picking requires the desktop app window.', 'error');
     return;
   }
+  const filePath = await window.pywebview.api.pick_file();
+  if (!filePath) {
+    showToast('No file selected.');
+    return;
+  }
   try {
-    const filePath = await window.pywebview.api.pick_file();
-    if (!filePath) return;
-    showToast('Encrypting and uploading…');
+    showToast('Encrypting and uploading, please wait...');
     const response = await apiRequest('/api/cloud/backup', {
       method: 'POST',
       body: JSON.stringify({ user_id: state.currentUser.id, email: state.currentUser.email, file_path: filePath }),
     });
-    showToast(response.message || 'Backed up.');
+    showToast(response.message || 'File backed up successfully.');
     await refreshCloudBackupList();
+    await refreshCloudQuota();
   } catch (error) {
     console.error('Backup failed:', error);
-    showToast(error.message || 'Backup failed', 'error');
+    showToast(error.message || 'Backup failed. Please try again.', 'error');
   }
 });
 
-async function restoreCloudBackup(backupId, suggestedName) {
+// --- Password re-confirmation modal (required before retrieving files) ---
+function requestPasswordConfirmation() {
+  const overlay = document.getElementById('passwordConfirmOverlay');
+  const input = document.getElementById('passwordConfirmInput');
+  const submitBtn = document.getElementById('passwordConfirmSubmitBtn');
+  const cancelBtn = document.getElementById('passwordConfirmCancelBtn');
+  const forgotBtn = document.getElementById('passwordConfirmForgotBtn');
+
+  input.value = '';
+  overlay.classList.remove('hidden');
+  input.focus();
+
+  return new Promise((resolve) => {
+    function cleanup(result) {
+      overlay.classList.add('hidden');
+      submitBtn.removeEventListener('click', onSubmit);
+      cancelBtn.removeEventListener('click', onCancel);
+      forgotBtn.removeEventListener('click', onForgot);
+      resolve(result);
+    }
+    async function onSubmit() {
+      const password = input.value;
+      if (!password) return;
+      try {
+        await apiRequest('/api/auth/confirm-password', {
+          method: 'POST',
+          body: JSON.stringify({ email: state.currentUser.email, password }),
+        });
+        cleanup(true);
+      } catch (error) {
+        showToast(error.message || 'Incorrect password.', 'error');
+      }
+    }
+    function onCancel() {
+      cleanup(false);
+    }
+    function onForgot() {
+      cleanup(false);
+      showToast('Log out and use "Forgot password?" on the login screen to reset it.');
+    }
+    submitBtn.addEventListener('click', onSubmit);
+    cancelBtn.addEventListener('click', onCancel);
+    forgotBtn.addEventListener('click', onForgot);
+  });
+}
+
+document.getElementById('retrieveFilesBtn')?.addEventListener('click', async () => {
+  const confirmed = await requestPasswordConfirmation();
+  if (!confirmed) return;
+  openRetrieveModal();
+});
+
+function openRetrieveModal() {
+  const overlay = document.getElementById('retrieveModalOverlay');
+  const listEl = document.getElementById('retrieveFileList');
+  const selectAll = document.getElementById('retrieveSelectAll');
+  const backups = state.cloudBackups || [];
+
+  if (!backups.length) {
+    showToast('No backed up files to retrieve yet.');
+    return;
+  }
+
+  listEl.innerHTML = backups.map((b) => `
+    <li class="retrieve-item">
+      <input type="checkbox" class="retrieve-checkbox" value="${b.id}" id="retrieve-${b.id}" />
+      <label for="retrieve-${b.id}">${b.original_name}<br><small style="color: var(--muted);">Backed up ${formatTime(b.backed_up_at)}</small></label>
+    </li>
+  `).join('');
+
+  selectAll.checked = false;
+  selectAll.onchange = () => {
+    document.querySelectorAll('.retrieve-checkbox').forEach((cb) => { cb.checked = selectAll.checked; });
+  };
+
+  overlay.classList.remove('hidden');
+}
+
+document.getElementById('retrieveCancelBtn')?.addEventListener('click', () => {
+  document.getElementById('retrieveModalOverlay').classList.add('hidden');
+});
+
+document.getElementById('retrieveConfirmBtn')?.addEventListener('click', async () => {
+  const selectedIds = Array.from(document.querySelectorAll('.retrieve-checkbox:checked')).map((cb) => Number(cb.value));
+  if (!selectedIds.length) {
+    showToast('Select at least one file.', 'error');
+    return;
+  }
   if (!window.pywebview || !window.pywebview.api) {
     showToast('File restore requires the desktop app window.', 'error');
     return;
   }
-  try {
-    const destinationPath = await window.pywebview.api.pick_save_location(suggestedName);
-    if (!destinationPath) return;
-    showToast('Downloading and decrypting…');
-    const response = await apiRequest('/api/cloud/restore', {
-      method: 'POST',
-      body: JSON.stringify({
-        user_id: state.currentUser.id,
-        email: state.currentUser.email,
-        backup_id: backupId,
-        destination_path: destinationPath,
-      }),
-    });
-    showToast(response.message || 'Restored.');
-  } catch (error) {
-    console.error('Restore failed:', error);
-    showToast(error.message || 'Restore failed', 'error');
+  const folder = await window.pywebview.api.pick_folder();
+  if (!folder) return;
+
+  document.getElementById('retrieveModalOverlay').classList.add('hidden');
+  showToast(`Restoring ${selectedIds.length} file(s)...`);
+
+  let successCount = 0;
+  for (const backupId of selectedIds) {
+    const backup = state.cloudBackups.find((b) => b.id === backupId);
+    if (!backup) continue;
+    const destinationPath = `${folder}\\${backup.original_name}`;
+    try {
+      await apiRequest('/api/cloud/restore', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: state.currentUser.id,
+          email: state.currentUser.email,
+          backup_id: backupId,
+          destination_path: destinationPath,
+        }),
+      });
+      successCount++;
+    } catch (error) {
+      console.error(`Restore failed for ${backup.original_name}:`, error);
+      showToast(`Failed to restore ${backup.original_name}: ${error.message}`, 'error');
+    }
   }
-}
+
+  showToast(`${successCount} of ${selectedIds.length} file(s) restored to ${folder}.`);
+});
 
 async function reverseFile(fileId) {
   if (!confirm('This will overwrite the current file with its last known-good version. Continue?')) return;
