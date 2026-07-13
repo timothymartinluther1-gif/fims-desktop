@@ -281,6 +281,45 @@ def google_exchange_code(code: str, redirect_uri: str) -> tuple[bool, dict]:
         return False, {"error": str(exc)}
 
 
+def supabase_refresh_token(refresh_token: str) -> tuple[bool, dict]:
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/auth/v1/token",
+            params={"grant_type": "refresh_token"},
+            headers={"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"},
+            json={"refresh_token": refresh_token},
+            timeout=15,
+        )
+        return resp.ok, resp.json()
+    except requests.RequestException as exc:
+        return False, {"message": str(exc)}
+
+
+def get_valid_supabase_token(user_id: str) -> Optional[str]:
+    token_row = get_cloud_token(user_id, "supabase")
+    if not token_row:
+        return None
+
+    expires_at = token_row.get("expires_at")
+    if expires_at:
+        try:
+            if datetime.fromisoformat(expires_at) > datetime.utcnow():
+                return token_row["access_token"]
+        except ValueError:
+            pass
+
+    if not token_row.get("refresh_token"):
+        return None
+
+    ok, body = supabase_refresh_token(token_row["refresh_token"])
+    if not ok:
+        print(f"[transfer] Supabase token refresh failed: {body}", flush=True)
+        return None
+
+    save_cloud_token(user_id, "supabase", body["access_token"], body.get("refresh_token"), body.get("expires_in"))
+    return body["access_token"]
+
+
 def google_refresh_token(refresh_token: str) -> tuple[bool, dict]:
     try:
         resp = requests.post(
@@ -415,6 +454,17 @@ def paystack_verify(reference: str) -> tuple[bool, dict]:
         return False, {"message": str(exc)}
 
 
+def log_case(user_id: str, file_id, file_name: str, action_type: str) -> None:
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO case_log (user_id, file_id, file_name, action_type, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (user_id, file_id, file_name, action_type, now_iso()),
+    )
+    conn.commit()
+    conn.close()
+
+
 def is_subscription_active(user_id: str, email: str = None) -> bool:
     if email and email.lower() == ADMIN_EMAIL.lower():
         return True  # Admin has permanent access, per spec
@@ -431,6 +481,110 @@ def is_subscription_active(user_id: str, email: str = None) -> bool:
         return datetime.fromisoformat(row["expires_at"]) > datetime.utcnow()
     except ValueError:
         return False
+
+
+# ===== Secure File Transfer System =====
+
+def postgrest_request(method: str, table: str, access_token: str, **kwargs) -> tuple[bool, Any]:
+    """Calls Supabase's auto-generated REST API for a table, using the
+    caller's own JWT (not just the anon key) so row-level security is
+    enforced as that specific user - never as an all-access admin."""
+    try:
+        resp = requests.request(
+            method,
+            f"{SUPABASE_URL}/rest/v1/{table}",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json",
+                "Prefer": kwargs.pop("prefer", "return=representation"),
+            },
+            timeout=15,
+            **kwargs,
+        )
+        body = resp.json() if resp.content else None
+        return resp.ok, body
+    except requests.RequestException as exc:
+        return False, {"message": str(exc)}
+
+
+def storage_upload(access_token: str, path: str, data: bytes) -> tuple[bool, Any]:
+    try:
+        resp = requests.post(
+            f"{SUPABASE_URL}/storage/v1/object/fims-transfers/{path}",
+            headers={
+                "apikey": SUPABASE_ANON_KEY,
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/octet-stream",
+            },
+            data=data,
+            timeout=60,
+        )
+        return resp.ok, (resp.json() if resp.content else None)
+    except requests.RequestException as exc:
+        return False, {"message": str(exc)}
+
+
+def storage_download(access_token: str, path: str) -> tuple[bool, bytes]:
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/storage/v1/object/fims-transfers/{path}",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"},
+            timeout=60,
+        )
+        return resp.ok, resp.content
+    except requests.RequestException as exc:
+        return False, str(exc).encode("utf-8")
+
+
+def storage_delete(access_token: str, path: str) -> bool:
+    try:
+        resp = requests.delete(
+            f"{SUPABASE_URL}/storage/v1/object/fims-transfers/{path}",
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        return resp.ok
+    except requests.RequestException:
+        return False
+
+
+def generate_user_code() -> str:
+    import secrets
+    import string
+    alphabet = string.ascii_uppercase + string.digits
+    part1 = "".join(secrets.choice(alphabet) for _ in range(4))
+    part2 = "".join(secrets.choice(alphabet) for _ in range(4))
+    return f"FIMS-{part1}-{part2}"
+
+
+def ensure_user_code(user_id: str, access_token: str, display_name: str) -> Optional[str]:
+    ok, rows = postgrest_request(
+        "GET", "fims_directory", access_token,
+        params={"user_id": f"eq.{user_id}", "select": "user_code"},
+    )
+    if ok and rows:
+        return rows[0]["user_code"]
+
+    for _ in range(5):  # retry on the astronomically unlikely code collision
+        code = generate_user_code()
+        ok, body = postgrest_request(
+            "POST", "fims_directory", access_token,
+            json={"user_code": code, "user_id": user_id, "display_name": display_name},
+        )
+        if ok:
+            return code
+    return None
+
+
+def lookup_user_by_code(access_token: str, code: str) -> Optional[dict]:
+    ok, rows = postgrest_request(
+        "GET", "fims_directory", access_token,
+        params={"user_code": f"eq.{code.strip().upper()}", "select": "user_id,display_name"},
+    )
+    if ok and rows:
+        return rows[0]
+    return None
 
 
 def resource_path() -> Path:
@@ -730,6 +884,15 @@ def init_db():
             activated_at TEXT,
             expires_at TEXT,
             last_reference TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS case_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            file_id INTEGER,
+            file_name TEXT NOT NULL,
+            action_type TEXT NOT NULL,  -- 'reviewed', 'resolved', 'reversed'
+            timestamp TEXT NOT NULL
         );
         """
     )
@@ -1318,6 +1481,8 @@ def resolve_alert(alert_id):
     except OSError as exc:
         print(f"[backup] could not update backup for file {file_id}: {exc!r}", flush=True)
 
+    log_case(alert["user_id"], file_id, file_row["name"], "resolved")
+
     return jsonify({
         "success": True,
         "message": "Change accepted. This is now the trusted version - monitoring continues from here.",
@@ -1377,10 +1542,342 @@ def reverse_file(file_id):
     conn.commit()
     conn.close()
 
+    log_case(file_row["user_id"], file_id, file_row["name"], "reversed")
+
     return jsonify({
         "success": True,
         "message": "File restored to its last known-good version. Monitoring continues.",
     })
+
+
+@app.route('/api/files/<int:file_id>/review', methods=['POST'])
+def review_file(file_id):
+    """Lets the user inspect a monitored file's current state directly in
+    the app - metadata plus a text preview when possible - instead of
+    minimizing the app to go check the file in its actual folder."""
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM files WHERE id = ?", (file_id,))
+    file_row = cursor.fetchone()
+    conn.close()
+
+    if not file_row:
+        return jsonify({"success": False, "message": "File not found."}), 404
+
+    if file_row["locked"]:
+        return jsonify({"success": False, "message": "This file is locked. Unlock it first to review it."}), 400
+
+    path = Path(file_row["path"])
+    preview = None
+    file_size = None
+    modified_at = None
+
+    try:
+        stat_result = path.stat()
+        file_size = stat_result.st_size
+        modified_at = datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds")
+
+        raw = path.read_bytes()
+        try:
+            text = raw[:20000].decode("utf-8")
+            preview = text
+        except UnicodeDecodeError:
+            preview = None  # binary file - metadata only, no text preview
+    except OSError as exc:
+        return jsonify({"success": False, "message": f"Could not read the file: {exc}"}), 400
+
+    log_case(file_row["user_id"], file_id, file_row["name"], "reviewed")
+
+    return jsonify({
+        "success": True,
+        "name": file_row["name"],
+        "path": str(path),
+        "status": file_row["status"],
+        "size": file_size,
+        "modified_at": modified_at,
+        "current_hash": file_row["current_hash"],
+        "trusted_hash": file_row["trusted_hash"],
+        "preview": preview,
+        "is_binary": preview is None,
+    })
+
+
+@app.route('/api/cases', methods=['GET'])
+def get_cases():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM case_log WHERE user_id = ? ORDER BY id DESC LIMIT 200",
+        (user_id,),
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return jsonify({"success": True, "cases": [row_to_dict(row) for row in rows]})
+
+
+@app.route('/api/transfer/my-code', methods=['GET'])
+def transfer_my_code():
+    user_id = request.args.get('user_id')
+    display_name = request.args.get('name', 'User')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    code = ensure_user_code(user_id, access_token, display_name)
+    if not code:
+        return jsonify({"success": False, "message": "Could not generate a user code."}), 400
+
+    return jsonify({"success": True, "code": code})
+
+
+@app.route('/api/transfer/lookup', methods=['POST'])
+def transfer_lookup():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    code = data.get('code')
+    if not user_id or not code:
+        return jsonify({"success": False, "message": "user_id and code are required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    receiver = lookup_user_by_code(access_token, code)
+    if not receiver:
+        return jsonify({"success": False, "message": "No user found with that code."}), 404
+
+    return jsonify({"success": True, "receiver_id": receiver["user_id"], "display_name": receiver["display_name"]})
+
+
+@app.route('/api/transfer/send', methods=['POST'])
+def transfer_send():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    sender_name = data.get('sender_name', 'User')
+    file_path = data.get('file_path')
+    receiver_code = data.get('receiver_code')
+    compress = bool(data.get('compress'))
+
+    if not user_id or not file_path or not receiver_code:
+        return jsonify({"success": False, "message": "user_id, file_path, and receiver_code are required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    receiver = lookup_user_by_code(access_token, receiver_code)
+    if not receiver:
+        return jsonify({"success": False, "message": "No user found with that code."}), 404
+    receiver_id = receiver["user_id"]
+
+    path = Path(file_path)
+    try:
+        original_bytes = path.read_bytes()
+    except OSError as exc:
+        return jsonify({"success": False, "message": f"Could not read the file: {exc}"}), 400
+
+    file_name = path.name
+    payload = original_bytes
+
+    if compress:
+        import io
+        import zipfile
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(path.name, original_bytes)
+        payload = buffer.getvalue()
+        file_name = path.name + ".zip"
+
+    trusted_hash = compute_hash(payload)
+
+    from cryptography.fernet import Fernet
+    transfer_key = Fernet.generate_key()
+    encrypted_payload = encrypt_bytes(payload, transfer_key)
+
+    storage_path = f"{user_id}/{receiver_id}/{now_iso().replace(':', '-')}_{file_name}"
+    ok, upload_result = storage_upload(access_token, storage_path, encrypted_payload)
+    if not ok:
+        return jsonify({"success": False, "message": f"Upload failed: {upload_result}"}), 400
+
+    ok2, insert_result = postgrest_request(
+        "POST", "transfer_requests", access_token,
+        json={
+            "sender_id": user_id,
+            "receiver_id": receiver_id,
+            "sender_name": sender_name,
+            "file_name": file_name,
+            "storage_path": storage_path,
+            "trusted_hash": trusted_hash,
+            "transfer_key": transfer_key.decode("utf-8"),
+            "file_size": len(payload),
+            "compressed": compress,
+            "status": "pending",
+        },
+    )
+    if not ok2:
+        storage_delete(access_token, storage_path)
+        return jsonify({"success": False, "message": f"Could not create transfer request: {insert_result}"}), 400
+
+    log_case(user_id, None, file_name, "sent")
+
+    return jsonify({"success": True, "message": f"{file_name} sent. Waiting for the receiver to accept."})
+
+
+@app.route('/api/transfer/incoming', methods=['GET'])
+def transfer_incoming():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    ok, rows = postgrest_request(
+        "GET", "transfer_requests", access_token,
+        params={
+            "receiver_id": f"eq.{user_id}",
+            "status": "eq.pending",
+            "select": "id,sender_name,file_name,file_size,compressed,created_at",
+            "order": "created_at.desc",
+        },
+    )
+    if not ok:
+        return jsonify({"success": False, "message": "Could not load incoming transfers."}), 400
+
+    return jsonify({"success": True, "transfers": rows or []})
+
+
+@app.route('/api/transfer/sent', methods=['GET'])
+def transfer_sent():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    ok, rows = postgrest_request(
+        "GET", "transfer_requests", access_token,
+        params={
+            "sender_id": f"eq.{user_id}",
+            "select": "id,file_name,status,file_size,created_at",
+            "order": "created_at.desc",
+            "limit": "100",
+        },
+    )
+    if not ok:
+        return jsonify({"success": False, "message": "Could not load sent transfers."}), 400
+
+    return jsonify({"success": True, "transfers": rows or []})
+
+
+@app.route('/api/transfer/reject', methods=['POST'])
+def transfer_reject():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    transfer_id = data.get('transfer_id')
+    if not user_id or not transfer_id:
+        return jsonify({"success": False, "message": "user_id and transfer_id are required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    ok, rows = postgrest_request(
+        "GET", "transfer_requests", access_token,
+        params={"id": f"eq.{transfer_id}", "select": "storage_path,file_name"},
+    )
+    if not ok or not rows:
+        return jsonify({"success": False, "message": "Transfer not found."}), 404
+    record = rows[0]
+
+    postgrest_request(
+        "PATCH", "transfer_requests", access_token,
+        params={"id": f"eq.{transfer_id}"},
+        json={"status": "rejected"},
+    )
+    storage_delete(access_token, record["storage_path"])
+    log_case(user_id, None, record["file_name"], "rejected")
+
+    return jsonify({"success": True, "message": "Transfer rejected."})
+
+
+@app.route('/api/transfer/accept', methods=['POST'])
+def transfer_accept():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    transfer_id = data.get('transfer_id')
+    destination_path = data.get('destination_path')
+    verify_hash = data.get('verify_hash', True)
+
+    if not user_id or not transfer_id or not destination_path:
+        return jsonify({"success": False, "message": "user_id, transfer_id, and destination_path are required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    ok, rows = postgrest_request(
+        "GET", "transfer_requests", access_token,
+        params={"id": f"eq.{transfer_id}", "select": "*"},
+    )
+    if not ok or not rows:
+        return jsonify({"success": False, "message": "Transfer not found."}), 404
+    record = rows[0]
+
+    ok2, encrypted_payload = storage_download(access_token, record["storage_path"])
+    if not ok2:
+        return jsonify({"success": False, "message": f"Download failed: {encrypted_payload}"}), 400
+
+    try:
+        payload = decrypt_bytes(encrypted_payload, record["transfer_key"].encode("utf-8"))
+    except Exception as exc:
+        return jsonify({"success": False, "message": f"Could not decrypt the file: {exc}"}), 400
+
+    integrity_note = "not checked (skipped by user)"
+    if verify_hash:
+        actual_hash = compute_hash(payload)
+        if actual_hash != record["trusted_hash"]:
+            log_case(user_id, None, record["file_name"], "rejected")
+            return jsonify({
+                "success": False,
+                "message": "Integrity check failed: this file doesn't match what the sender sent. It was not saved.",
+            }), 400
+        integrity_note = "verified, matches sender's hash"
+
+    try:
+        if record["compressed"]:
+            import io
+            import zipfile
+            with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                names = zf.namelist()
+                payload = zf.read(names[0]) if names else b""
+
+        dest = Path(destination_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(payload)
+    except OSError as exc:
+        return jsonify({"success": False, "message": f"Could not save the file: {exc}"}), 400
+
+    postgrest_request(
+        "PATCH", "transfer_requests", access_token,
+        params={"id": f"eq.{transfer_id}"},
+        json={"status": "completed"},
+    )
+    storage_delete(access_token, record["storage_path"])
+    log_case(user_id, None, record["file_name"], "received")
+
+    return jsonify({"success": True, "message": f"File received and saved. Integrity: {integrity_note}."})
 
 
 def _run_icacls(args: list) -> tuple[bool, str]:

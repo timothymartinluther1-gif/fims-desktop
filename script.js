@@ -406,6 +406,17 @@ async function simulateChange(fileId) {
   }
 }
 
+function switchDashboardView(viewName) {
+  document.querySelectorAll('.dashboard-view').forEach((el) => {
+    el.classList.toggle('active', el.dataset.view === viewName);
+  });
+  document.querySelectorAll('.sidebar-nav-btn').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.view === viewName);
+  });
+  if (viewName === 'cases') refreshCasesList();
+  if (viewName === 'transfers') refreshTransfersView();
+}
+
 function setFileFilter(filter) {
   state.fileFilter = filter;
   renderDashboard();
@@ -414,10 +425,7 @@ function setFileFilter(filter) {
   if (filter === 'monitoring') document.getElementById('statSafeCard')?.classList.add('active');
   if (filter === 'tampered') document.getElementById('statTamperedCard')?.classList.add('active');
 
-  const dashboardBtn = document.getElementById('dashboardBtn');
-  if (dashboardBtn) dashboardBtn.classList.toggle('active', filter === 'all');
-
-  document.getElementById('filesTablePanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  switchDashboardView('files');
 }
 
 // --- Theme toggle (persisted, matches the script that runs before first paint) ---
@@ -442,18 +450,19 @@ if (themeToggleBtn) {
   });
 }
 
-// --- Dashboard / stat-card navigation ---
-const dashboardBtnEl = document.getElementById('dashboardBtn');
-if (dashboardBtnEl) {
-  dashboardBtnEl.addEventListener('click', () => setFileFilter('all'));
-}
+// --- Sidebar navigation ---
+document.querySelectorAll('.sidebar-nav-btn').forEach((btn) => {
+  btn.addEventListener('click', () => switchDashboardView(btn.dataset.view));
+});
+
+document.getElementById('sidebarToggleBtn')?.addEventListener('click', () => {
+  document.getElementById('sidebarNav')?.classList.toggle('collapsed');
+});
 
 document.getElementById('statSafeCard')?.addEventListener('click', () => setFileFilter('monitoring'));
 document.getElementById('statTamperedCard')?.addEventListener('click', () => setFileFilter('tampered'));
 document.getElementById('statFilesCard')?.addEventListener('click', () => setFileFilter('all'));
-document.getElementById('statAlertsCard')?.addEventListener('click', () => {
-  document.getElementById('alertsPanelHeader')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-});
+document.getElementById('statAlertsCard')?.addEventListener('click', () => switchDashboardView('alerts'));
 
 async function resolveAlert(alertId) {
   try {
@@ -751,6 +760,236 @@ document.getElementById('retrieveConfirmBtn')?.addEventListener('click', async (
   showToast(`${successCount} of ${selectedIds.length} file(s) restored to ${folder}.`);
 });
 
+async function reviewFile(fileId) {
+  try {
+    const data = await apiRequest(`/api/files/${fileId}/review`, { method: 'POST' });
+
+    document.getElementById('reviewFileName').textContent = data.name;
+    const sizeText = data.size != null ? formatBytes(data.size) : 'unknown size';
+    document.getElementById('reviewMeta').innerHTML = `
+      ${data.path}<br>
+      Status: <strong>${data.status}</strong> · ${sizeText} · modified ${formatTime(data.modified_at)}<br>
+      Current hash: <code>${(data.current_hash || '').slice(0, 24)}...</code>
+    `;
+
+    const previewEl = document.getElementById('reviewPreview');
+    previewEl.textContent = data.is_binary
+      ? '(Binary file, no text preview available. Metadata above is still accurate.)'
+      : data.preview || '(File is empty.)';
+
+    document.getElementById('reviewModalOverlay').classList.remove('hidden');
+  } catch (error) {
+    console.error('Review failed:', error);
+    showToast(error.message || 'Could not review file', 'error');
+  }
+}
+
+document.getElementById('reviewCloseBtn')?.addEventListener('click', () => {
+  document.getElementById('reviewModalOverlay').classList.add('hidden');
+});
+
+let cachedCases = [];
+
+async function refreshCasesList() {
+  try {
+    const data = await apiRequest(`/api/cases?user_id=${state.currentUser.id}`);
+    cachedCases = data.cases || [];
+    renderCasesList('all');
+  } catch (error) {
+    console.error('Failed to load cases:', error);
+  }
+}
+
+function renderCasesList(filter) {
+  const tbody = document.getElementById('caseTableBody');
+  const rows = filter === 'all' ? cachedCases : cachedCases.filter((c) => c.action_type === filter);
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="3" class="empty-row">No cases yet</td></tr>';
+    return;
+  }
+
+  const actionLabel = { reviewed: '🔎 Reviewed', resolved: '✅ Resolved', reversed: '↩ Reversed', sent: '📤 Sent', received: '📥 Received', rejected: '🚫 Rejected' };
+  tbody.innerHTML = rows.map((c) => `
+    <tr>
+      <td>${c.file_name}</td>
+      <td>${actionLabel[c.action_type] || c.action_type}</td>
+      <td>${formatTime(c.timestamp)}</td>
+    </tr>
+  `).join('');
+}
+
+document.querySelectorAll('[data-case-filter]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('[data-case-filter]').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderCasesList(btn.dataset.caseFilter);
+  });
+});
+
+// ===== Secure File Transfer System =====
+
+async function refreshTransfersView() {
+  if (!state.currentUser?.id) return;
+  await loadMyTransferCode();
+  await refreshIncomingTransfers();
+  await refreshSentTransfers();
+}
+
+async function loadMyTransferCode() {
+  const codeEl = document.getElementById('myTransferCode');
+  try {
+    const data = await apiRequest(`/api/transfer/my-code?user_id=${state.currentUser.id}&name=${encodeURIComponent(state.currentUser.name)}`);
+    codeEl.textContent = data.code;
+  } catch (error) {
+    codeEl.textContent = 'Could not load code';
+    console.error('Failed to load transfer code:', error);
+  }
+}
+
+document.getElementById('copyCodeBtn')?.addEventListener('click', () => {
+  const code = document.getElementById('myTransferCode').textContent;
+  navigator.clipboard?.writeText(code);
+  showToast('Code copied.');
+});
+
+document.getElementById('browseTransferFileBtn')?.addEventListener('click', async () => {
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast('File picking requires the desktop app window.', 'error');
+    return;
+  }
+  const filePath = await window.pywebview.api.pick_file();
+  if (filePath) document.getElementById('transferFilePathInput').value = filePath;
+});
+
+document.getElementById('sendTransferForm')?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const receiverCode = document.getElementById('receiverCodeInput').value.trim();
+  const filePath = document.getElementById('transferFilePathInput').value;
+  const compress = document.getElementById('compressTransferInput').checked;
+
+  if (!filePath) {
+    showToast('Choose a file first.', 'error');
+    return;
+  }
+
+  try {
+    showToast('Encrypting and sending...');
+    const response = await apiRequest('/api/transfer/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: state.currentUser.id,
+        sender_name: state.currentUser.name,
+        file_path: filePath,
+        receiver_code: receiverCode,
+        compress,
+      }),
+    });
+    showToast(response.message || 'Sent.');
+    document.getElementById('sendTransferForm').reset();
+    document.getElementById('transferFilePathInput').value = '';
+    await refreshSentTransfers();
+  } catch (error) {
+    console.error('Send failed:', error);
+    showToast(error.message || 'Could not send file', 'error');
+  }
+});
+
+async function refreshIncomingTransfers() {
+  const listEl = document.getElementById('incomingTransferList');
+  try {
+    const data = await apiRequest(`/api/transfer/incoming?user_id=${state.currentUser.id}`);
+    const transfers = data.transfers || [];
+    if (!transfers.length) {
+      listEl.innerHTML = '<li class="empty-state">No incoming requests</li>';
+      return;
+    }
+    listEl.innerHTML = transfers.map((t) => `
+      <li>
+        <div class="row-actions" style="justify-content: space-between;">
+          <div>
+            <strong style="color: var(--text);">${t.file_name}</strong>
+            <div style="color: var(--muted); font-size: 0.78rem;">From ${t.sender_name} · ${formatBytes(t.file_size || 0)} · ${formatTime(t.created_at)}</div>
+          </div>
+          <div class="row-actions">
+            <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="acceptTransfer('${t.id}', '${t.file_name.replace(/'/g, "\\'")}')">Accept</button>
+            <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="rejectTransfer('${t.id}')">Reject</button>
+          </div>
+        </div>
+      </li>
+    `).join('');
+  } catch (error) {
+    console.error('Failed to load incoming transfers:', error);
+  }
+}
+
+async function refreshSentTransfers() {
+  const listEl = document.getElementById('sentTransferList');
+  try {
+    const data = await apiRequest(`/api/transfer/sent?user_id=${state.currentUser.id}`);
+    const transfers = data.transfers || [];
+    if (!transfers.length) {
+      listEl.innerHTML = '<li class="empty-state">Nothing sent yet</li>';
+      return;
+    }
+    const statusLabel = { pending: '⏳ Waiting for approval', completed: '✅ Received', rejected: '🚫 Rejected' };
+    listEl.innerHTML = transfers.map((t) => `
+      <li>
+        <strong style="color: var(--text);">${t.file_name}</strong>
+        <div style="color: var(--muted); font-size: 0.78rem;">${statusLabel[t.status] || t.status} · ${formatTime(t.created_at)}</div>
+      </li>
+    `).join('');
+  } catch (error) {
+    console.error('Failed to load sent transfers:', error);
+  }
+}
+
+async function rejectTransfer(transferId) {
+  try {
+    const response = await apiRequest('/api/transfer/reject', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id, transfer_id: transferId }),
+    });
+    showToast(response.message || 'Rejected.');
+    await refreshIncomingTransfers();
+  } catch (error) {
+    console.error('Reject failed:', error);
+    showToast(error.message || 'Could not reject transfer', 'error');
+  }
+}
+
+async function acceptTransfer(transferId, fileName) {
+  const confirmed = await requestPasswordConfirmation();
+  if (!confirmed) return;
+
+  const verifyHash = confirm('Verify file integrity before accepting?\n\nOK = verify the hash matches what the sender sent (recommended)\nCancel = accept without verifying');
+
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast('File saving requires the desktop app window.', 'error');
+    return;
+  }
+  const destinationPath = await window.pywebview.api.pick_save_location(fileName);
+  if (!destinationPath) return;
+
+  try {
+    showToast('Downloading and decrypting...');
+    const response = await apiRequest('/api/transfer/accept', {
+      method: 'POST',
+      body: JSON.stringify({
+        user_id: state.currentUser.id,
+        transfer_id: transferId,
+        destination_path: destinationPath,
+        verify_hash: verifyHash,
+      }),
+    });
+    showToast(response.message || 'Received.');
+    await refreshIncomingTransfers();
+  } catch (error) {
+    console.error('Accept failed:', error);
+    showToast(error.message || 'Could not accept transfer', 'error');
+  }
+}
+
 async function reverseFile(fileId) {
   if (!confirm('This will overwrite the current file with its last known-good version. Continue?')) return;
 
@@ -767,9 +1006,13 @@ async function reverseFile(fileId) {
 // ===== Render Functions =====
 
 function renderDashboard() {
-  // Show/hide user panel based on admin status
+  // Show/hide the admin nav item based on admin status
+  const adminNavBtn = document.getElementById('adminNavBtn');
+  if (adminNavBtn) {
+    adminNavBtn.classList.toggle('hidden', !isAdminUser());
+  }
   if (userPanel) {
-    userPanel.classList.toggle('hidden', !isAdminUser());
+    userPanel.classList.remove('hidden');
   }
 
   // Update stats
@@ -820,6 +1063,7 @@ function renderDashboard() {
         <td>${formatTime(file.last_checked)}</td>
         <td>
           <div class="row-actions">
+            ${!file.locked ? `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem;" onclick="event.stopPropagation(); reviewFile(${file.id})">Review</button>` : ''}
             ${file.status && file.status !== 'monitoring' && !file.locked ? `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="event.stopPropagation(); reverseFile(${file.id})">Reverse</button>` : ''}
             ${file.locked
               ? `<button class="ghost-btn" style="padding: 6px 12px; font-size: 0.8rem; background: rgba(212, 163, 115, 0.15); color: var(--accent-2);" onclick="event.stopPropagation(); unlockFile(${file.id})">Unlock</button>`

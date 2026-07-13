@@ -150,6 +150,7 @@
   <section id="dashboardPanel" class="dashboard-panel hidden">
     <div class="top-bar">
       <div class="brand">
+        <button id="sidebarToggleBtn" class="hamburger-btn" aria-label="Toggle navigation">☰</button>
         <div class="brand-logo">🔐</div>
         <div>
           <strong>Integrity Monitor</strong>
@@ -158,147 +159,246 @@
       </div>
       <div class="nav-links">
         <span class="connection-pill">● Live</span>
-        <button id="dashboardBtn" class="dashboard-nav-btn active">Dashboard</button>
         <button id="refreshBtn" class="refresh-btn">Refresh</button>
         <button id="logoutBtn" class="logout-btn">Log Out</button>
       </div>
     </div>
 
-    <div class="content-grid">
-      <div class="left-column">
-        <div class="table-panel" id="filesTablePanel">
-          <div class="table-header">
-            <h4>Monitored Files</h4>
-            <span id="fileFilterIndicator" class="hidden"></span>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>File</th>
-                  <th>Hash</th>
-                  <th>Status</th>
-                  <th>Last Checked</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="fileTableBody">
-                <tr><td colspan="5" class="empty-row">No files uploaded yet</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
+    <div class="dashboard-body">
+      <nav class="sidebar-nav" id="sidebarNav">
+        <button class="sidebar-nav-btn active" data-view="overview"><span class="nav-icon">🏠</span><span class="nav-label">Overview</span></button>
+        <button class="sidebar-nav-btn" data-view="files"><span class="nav-icon">📁</span><span class="nav-label">Files</span></button>
+        <button class="sidebar-nav-btn" data-view="alerts"><span class="nav-icon">⚠️</span><span class="nav-label">Alerts</span></button>
+        <button class="sidebar-nav-btn" data-view="cloud"><span class="nav-icon">☁️</span><span class="nav-label">Cloud Backup</span></button>
+        <button class="sidebar-nav-btn" data-view="cases"><span class="nav-icon">📋</span><span class="nav-label">Cases</span></button>
+        <button class="sidebar-nav-btn" data-view="transfers"><span class="nav-icon">📨</span><span class="nav-label">Transfers</span></button>
+        <button class="sidebar-nav-btn hidden" id="adminNavBtn" data-view="admin"><span class="nav-icon">👤</span><span class="nav-label">Users (Admin)</span></button>
+      </nav>
 
-        <div class="table-panel user-panel hidden">
-          <div class="table-header"><h4>All Users (Admin)</h4></div>
-          <ul id="userList" class="user-list">
-            <li class="empty-state">No users found</li>
-          </ul>
-        </div>
-      </div>
+      <div class="dashboard-main">
 
-      <aside class="right-column">
-        <div class="panel upload-panel">
-          <div class="panel-header"><h4>Add a file</h4></div>
-          <form id="uploadForm">
-            <div class="field-group">
-              <label for="filePathInput">File to monitor (live, detects real edits or moves)</label>
-              <div class="path-row">
-                <input type="text" id="filePathInput" placeholder="C:\path\to\file.txt" />
-                <button type="button" id="browseBtn" class="ghost-btn">Browse…</button>
+        <!-- ===== OVERVIEW VIEW ===== -->
+        <div class="dashboard-view active" data-view="overview">
+          <div class="stats-grid">
+            <div class="stat-card success-card" id="statSafeCard" data-filter="monitoring">
+              <span>Safe</span>
+              <strong id="safeCount">0</strong>
+            </div>
+            <div class="stat-card warning-card" id="statTamperedCard" data-filter="tampered">
+              <span>Tampered</span>
+              <strong id="tamperedCount">0</strong>
+            </div>
+            <div class="stat-card info-card" id="statAlertsCard" data-filter="alerts">
+              <span>Alerts</span>
+              <strong id="alertCount">0</strong>
+            </div>
+            <div class="stat-card" id="statFilesCard" data-filter="all">
+              <span>Files</span>
+              <strong id="fileCount">0</strong>
+            </div>
+          </div>
+
+          <div class="panel upload-panel">
+            <div class="panel-header"><h4>Add a file</h4></div>
+            <form id="uploadForm">
+              <div class="field-group">
+                <label for="filePathInput">File to monitor (live, detects real edits or moves)</label>
+                <div class="path-row">
+                  <input type="text" id="filePathInput" placeholder="C:\path\to\file.txt" />
+                  <button type="button" id="browseBtn" class="ghost-btn">Browse…</button>
+                </div>
+                <small id="browseHint" class="field-hint hidden">Native browse isn't available in this view. Type or paste the full path instead.</small>
               </div>
-              <small id="browseHint" class="field-hint hidden">Native browse isn't available in this view. Type or paste the full path instead.</small>
+
+              <details class="upload-fallback">
+                <summary>Or upload a copy instead (works without desktop access, but won't detect edits to your original file)</summary>
+                <label for="fileInput" class="upload-box">
+                  <span>📁 Choose a file to upload</span>
+                  <small>A private copy will be monitored, not your original</small>
+                </label>
+                <input type="file" id="fileInput" />
+              </details>
+
+              <button type="submit" class="submit-btn">Start Monitoring</button>
+            </form>
+          </div>
+
+          <div id="selectedFileInfo" class="panel" style="display:none;">
+            <div class="panel-header">
+              <h4 id="selectedFileName">File Name</h4>
+              <button id="clearSelectionBtn" class="ghost-btn">Clear</button>
             </div>
-
-            <details class="upload-fallback">
-              <summary>Or upload a copy instead (works without desktop access, but won't detect edits to your original file)</summary>
-              <label for="fileInput" class="upload-box">
-                <span>📁 Choose a file to upload</span>
-                <small>A private copy will be monitored, not your original</small>
-              </label>
-              <input type="file" id="fileInput" />
-            </details>
-
-            <button type="submit" class="submit-btn">Start Monitoring</button>
-          </form>
-        </div>
-
-        <div class="stats-grid">
-          <div class="stat-card success-card" id="statSafeCard" data-filter="monitoring">
-            <span>Safe</span>
-            <strong id="safeCount">0</strong>
-          </div>
-          <div class="stat-card warning-card" id="statTamperedCard" data-filter="tampered">
-            <span>Tampered</span>
-            <strong id="tamperedCount">0</strong>
-          </div>
-          <div class="stat-card info-card" id="statAlertsCard" data-filter="alerts">
-            <span>Alerts</span>
-            <strong id="alertCount">0</strong>
-          </div>
-          <div class="stat-card" id="statFilesCard" data-filter="all">
-            <span>Files</span>
-            <strong id="fileCount">0</strong>
+            <span id="selectedFileStatus" class="status-pill status-monitoring">monitoring</span>
+            <ul class="user-list">
+              <li>Hash 1: <code id="hash1">—</code> <small id="hash1Time">—</small></li>
+              <li>Hash 2: <code id="hash2">—</code> <small id="hash2Time">—</small></li>
+              <li>Hash 3: <code id="hash3">—</code> <small id="hash3Time">—</small></li>
+            </ul>
+            <button id="simulateBtn" class="ghost-btn">Simulate tampering</button>
           </div>
         </div>
 
-        <div id="selectedFileInfo" class="panel" style="display:none;">
-          <div class="panel-header">
-            <h4 id="selectedFileName">File Name</h4>
-            <button id="clearSelectionBtn" class="ghost-btn">Clear</button>
-          </div>
-          <span id="selectedFileStatus" class="status-pill status-monitoring">monitoring</span>
-          <ul class="user-list">
-            <li>Hash 1: <code id="hash1">—</code> <small id="hash1Time">—</small></li>
-            <li>Hash 2: <code id="hash2">—</code> <small id="hash2Time">—</small></li>
-            <li>Hash 3: <code id="hash3">—</code> <small id="hash3Time">—</small></li>
-          </ul>
-          <button id="simulateBtn" class="ghost-btn">Simulate tampering</button>
-        </div>
-
-        <div class="panel">
-          <div class="table-header" id="alertsPanelHeader"><h4>Recent Alerts</h4></div>
-          <ul id="alertList" class="alert-list">
-            <li class="empty-state">No alerts yet</li>
-          </ul>
-        </div>
-
-        <div class="panel" id="cloudPanel">
-          <div class="table-header"><h4>☁️ Cloud Backup</h4></div>
-
-          <div id="cloudSubscribeSection">
-            <p class="field-hint" style="margin-bottom: 12px;">Cloud backup is a paid feature. Choose a plan to get started.</p>
-            <div class="row-actions" style="margin-bottom: 8px;">
-              <button class="ghost-btn" data-plan="2month">2 months - $5</button>
-              <button class="ghost-btn" data-plan="5month">5 months - $10</button>
-              <button class="ghost-btn" data-plan="1year">1 year - $25</button>
+        <!-- ===== FILES VIEW ===== -->
+        <div class="dashboard-view" data-view="files">
+          <div class="table-panel" id="filesTablePanel">
+            <div class="table-header">
+              <h4>Monitored Files</h4>
+              <span id="fileFilterIndicator" class="hidden"></span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Hash</th>
+                    <th>Status</th>
+                    <th>Last Checked</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="fileTableBody">
+                  <tr><td colspan="5" class="empty-row">No files uploaded yet</td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
+        </div>
 
-          <div id="cloudActiveSection" class="hidden">
-            <p class="field-hint" id="cloudPlanLabel" style="margin-bottom: 12px;"></p>
+        <!-- ===== ALERTS VIEW ===== -->
+        <div class="dashboard-view" data-view="alerts">
+          <div class="panel">
+            <div class="table-header" id="alertsPanelHeader"><h4>Recent Alerts</h4></div>
+            <ul id="alertList" class="alert-list">
+              <li class="empty-state">No alerts yet</li>
+            </ul>
+          </div>
+        </div>
 
-            <div id="cloudConnectSection">
-              <button id="connectGoogleDriveBtn" class="ghost-btn">Connect Google Drive</button>
-            </div>
+        <!-- ===== CLOUD BACKUP VIEW ===== -->
+        <div class="dashboard-view" data-view="cloud">
+          <div class="panel" id="cloudPanel">
+            <div class="table-header"><h4>☁️ Cloud Backup</h4></div>
 
-            <div id="cloudBackupSection" class="hidden">
-              <p class="field-hint" style="color: var(--green-dark); margin-bottom: 4px;">Google Drive connected.</p>
-              <p class="field-hint" id="cloudQuotaLabel" style="margin-bottom: 12px;"></p>
-
+            <div id="cloudSubscribeSection">
+              <p class="field-hint" style="margin-bottom: 12px;">Cloud backup is a paid feature. Choose a plan to get started.</p>
               <div class="row-actions" style="margin-bottom: 8px;">
-                <button id="backupFileBtn" class="ghost-btn">Back Up a File</button>
-                <button id="retrieveFilesBtn" class="ghost-btn">Retrieve Files</button>
+                <button class="ghost-btn" data-plan="2month">2 months - $5</button>
+                <button class="ghost-btn" data-plan="5month">5 months - $10</button>
+                <button class="ghost-btn" data-plan="1year">1 year - $25</button>
+              </div>
+            </div>
+
+            <div id="cloudActiveSection" class="hidden">
+              <p class="field-hint" id="cloudPlanLabel" style="margin-bottom: 12px;"></p>
+
+              <div id="cloudConnectSection">
+                <button id="connectGoogleDriveBtn" class="ghost-btn">Connect Google Drive</button>
               </div>
 
-              <div class="table-header" style="margin-top: 20px;"><h4 style="font-size: 0.95rem;">Backed Up Files</h4></div>
-              <ul id="cloudBackupList" class="user-list">
-                <li class="empty-state">No backups yet</li>
-              </ul>
+              <div id="cloudBackupSection" class="hidden">
+                <p class="field-hint" style="color: var(--green-dark); margin-bottom: 4px;">Google Drive connected.</p>
+                <p class="field-hint" id="cloudQuotaLabel" style="margin-bottom: 12px;"></p>
+
+                <div class="row-actions" style="margin-bottom: 8px;">
+                  <button id="backupFileBtn" class="ghost-btn">Back Up a File</button>
+                  <button id="retrieveFilesBtn" class="ghost-btn">Retrieve Files</button>
+                </div>
+
+                <div class="table-header" style="margin-top: 20px;"><h4 style="font-size: 0.95rem;">Backed Up Files</h4></div>
+                <ul id="cloudBackupList" class="user-list">
+                  <li class="empty-state">No backups yet</li>
+                </ul>
+              </div>
             </div>
           </div>
         </div>
-      </aside>
+
+        <!-- ===== CASES VIEW ===== -->
+        <div class="dashboard-view" data-view="cases">
+          <div class="table-panel">
+            <div class="table-header">
+              <h4>Cases</h4>
+              <div class="row-actions">
+                <button class="dashboard-nav-btn active" data-case-filter="all">All</button>
+                <button class="dashboard-nav-btn" data-case-filter="reviewed">Reviewed</button>
+                <button class="dashboard-nav-btn" data-case-filter="resolved">Resolved</button>
+                <button class="dashboard-nav-btn" data-case-filter="reversed">Reversed</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Action</th>
+                    <th>When</th>
+                  </tr>
+                </thead>
+                <tbody id="caseTableBody">
+                  <tr><td colspan="3" class="empty-row">No cases yet</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== TRANSFERS VIEW ===== -->
+        <div class="dashboard-view" data-view="transfers">
+          <div class="panel">
+            <div class="table-header"><h4>Your Code</h4></div>
+            <p class="field-hint" style="margin-bottom: 8px;">Share this code with someone to receive a file from them.</p>
+            <div class="row-actions" style="align-items: center;">
+              <code id="myTransferCode" style="font-size: 1.1rem; background: var(--bg-secondary); padding: 8px 16px; border-radius: 8px;">Loading...</code>
+              <button id="copyCodeBtn" class="ghost-btn">Copy</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="table-header"><h4>Send a File</h4></div>
+            <form id="sendTransferForm">
+              <div class="field-group">
+                <label for="receiverCodeInput">Receiver's code</label>
+                <input type="text" id="receiverCodeInput" placeholder="FIMS-XXXX-XXXX" required />
+              </div>
+              <div class="path-row" style="margin-bottom: 12px;">
+                <input type="text" id="transferFilePathInput" placeholder="Choose a file..." readonly />
+                <button type="button" id="browseTransferFileBtn" class="ghost-btn">Browse…</button>
+              </div>
+              <label class="field-hint" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                <input type="checkbox" id="compressTransferInput" /> Compress before sending
+              </label>
+              <button type="submit" class="submit-btn">Send File</button>
+            </form>
+          </div>
+
+          <div class="table-panel">
+            <div class="table-header"><h4>Incoming Requests</h4></div>
+            <ul id="incomingTransferList" class="user-list">
+              <li class="empty-state">No incoming requests</li>
+            </ul>
+          </div>
+
+          <div class="table-panel">
+            <div class="table-header"><h4>Sent History</h4></div>
+            <ul id="sentTransferList" class="user-list">
+              <li class="empty-state">Nothing sent yet</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- ===== ADMIN VIEW ===== -->
+        <div class="dashboard-view" data-view="admin">
+          <div class="table-panel user-panel">
+            <div class="table-header"><h4>All Users (Admin)</h4></div>
+            <ul id="userList" class="user-list">
+              <li class="empty-state">No users found</li>
+            </ul>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
 
       <!-- Password re-confirmation, required before any file retrieval -->
       <div id="passwordConfirmOverlay" class="modal-overlay hidden">
@@ -331,8 +431,18 @@
           </div>
         </div>
       </div>
-    </div>
-  </section>
+
+      <!-- Review a file's current content/metadata without leaving the app -->
+      <div id="reviewModalOverlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 640px;">
+          <h4 id="reviewFileName">Review File</h4>
+          <div id="reviewMeta" class="field-hint" style="margin-bottom: 12px;"></div>
+          <div id="reviewPreview" style="background: var(--bg-secondary); border-radius: 10px; padding: 12px; max-height: 320px; overflow: auto; font-family: 'Consolas', monospace; font-size: 0.82rem; white-space: pre-wrap; word-break: break-word;"></div>
+          <div class="row-actions" style="margin-top: 16px; justify-content: flex-end;">
+            <button id="reviewCloseBtn" class="ghost-btn">Close</button>
+          </div>
+        </div>
+      </div>
 
 </div>
 <script src="/script.js"></script>
