@@ -571,12 +571,36 @@ async function refreshCloudBackupList() {
     }
     listEl.innerHTML = backups.map((b) => `
       <li>
-        <strong style="color: var(--text);">${b.original_name}</strong>
-        <div style="color: var(--muted); font-size: 0.78rem;">Backed up ${formatTime(b.backed_up_at)}</div>
+        <div class="row-actions" style="justify-content: space-between;">
+          <div>
+            <strong style="color: var(--text);">🔒 ${b.original_name}</strong>
+            <div style="color: var(--muted); font-size: 0.78rem;">Encrypted, backed up ${formatTime(b.backed_up_at)}</div>
+          </div>
+          <button class="ghost-btn" style="padding: 4px 10px; font-size: 0.78rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="deleteCloudBackup(${b.id}, '${b.original_name.replace(/'/g, "\\'")}')">Delete</button>
+        </div>
       </li>
     `).join('');
   } catch (error) {
     console.error('Failed to load cloud backups:', error);
+  }
+}
+
+async function deleteCloudBackup(backupId, name) {
+  const confirmed = await requestPasswordConfirmation();
+  if (!confirmed) return;
+  if (!confirm(`Permanently delete "${name}" from your cloud backup? This can't be undone.`)) return;
+
+  try {
+    const response = await apiRequest(`/api/cloud/backup/${backupId}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id }),
+    });
+    showToast(response.message || 'Backup deleted.');
+    await refreshCloudBackupList();
+    await refreshCloudQuota();
+  } catch (error) {
+    console.error('Delete backup failed:', error);
+    showToast(error.message || 'Could not delete backup', 'error');
   }
 }
 
@@ -1092,25 +1116,28 @@ function renderDashboard() {
         border-radius: 8px;
         margin-bottom: 8px;
       `;
+
+      let statusLine;
+      if (alert.resolution_type === 'resolved') {
+        statusLine = `Status: <strong style="color: var(--success);">Resolved</strong> (accepted as new trusted version) at ${formatTime(alert.resolved_at)}`;
+      } else if (alert.resolution_type === 'reversed') {
+        statusLine = `Status: <strong style="color: var(--success);">Reversed</strong> (restored to original) at ${formatTime(alert.resolved_at)}`;
+      } else {
+        statusLine = `Status: <strong style="color: var(--danger);">Pending</strong>, action needed`;
+      }
+
+      const deviceLine = alert.os_username
+        ? `Device: <strong>${alert.os_username}@${alert.hostname || 'unknown'}</strong> (${alert.session_type === 'remote' ? `remote session${alert.remote_ip ? ' from ' + alert.remote_ip : ''}` : 'local session'})`
+        : 'Device: unknown';
+
       item.innerHTML = `
         <div class="row-actions" style="justify-content: space-between; align-items: start; gap: 10px;">
-          <div style="flex: 1; min-width: 140px;">
-            <strong style="color: var(--text);">${alert.file_name}</strong>
-            <div style="color: var(--muted); font-size: 0.85rem; margin-top: 4px;">
-              ${isResolved ? '✅ Resolved' : '⚠️ Tampered'} at ${formatTime(alert.timestamp)}
-            </div>
-            <small style="color: var(--muted); font-size: 0.75rem;">
-              ${alert.previous_hash ? alert.previous_hash.slice(0, 12) + '...' : '—'} → 
-              ${alert.new_hash ? alert.new_hash.slice(0, 12) + '...' : '—'}
-            </small>
-            ${alert.os_username ? `
-              <div style="color: var(--muted); font-size: 0.75rem; margin-top: 4px;">
-                🖥️ ${alert.os_username}@${alert.hostname || 'unknown'}
-                ${alert.session_type === 'remote'
-                  ? ` · <span style="color: var(--danger);">Remote session${alert.remote_ip ? ' from ' + alert.remote_ip : ''}</span>`
-                  : ' · Local session'}
-              </div>
-            ` : ''}
+          <div style="flex: 1; min-width: 140px; font-size: 0.85rem; color: var(--text); line-height: 1.6;">
+            <strong style="font-size: 0.95rem;">${alert.file_name}</strong>
+            <div>Detected: ${formatTime(alert.timestamp)}</div>
+            <div>Hash: <code style="font-size: 0.78rem;">${alert.previous_hash ? alert.previous_hash.slice(0, 14) + '...' : '—'} &rarr; ${alert.new_hash ? alert.new_hash.slice(0, 14) + '...' : '—'}</code></div>
+            <div>${deviceLine}</div>
+            <div>${statusLine}</div>
           </div>
           ${!isResolved ? `
             <div style="display: flex; gap: 6px; flex-wrap: wrap;">

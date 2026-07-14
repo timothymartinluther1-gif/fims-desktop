@@ -403,6 +403,18 @@ def google_drive_download(access_token: str, file_id: str) -> tuple[bool, bytes]
         return False, str(exc).encode("utf-8")
 
 
+def google_drive_delete(access_token: str, file_id: str) -> bool:
+    try:
+        resp = requests.delete(
+            f"https://www.googleapis.com/drive/v3/files/{file_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        return resp.ok
+    except requests.RequestException:
+        return False
+
+
 def google_drive_storage_quota(access_token: str) -> tuple[bool, dict]:
     try:
         resp = requests.get(
@@ -804,6 +816,10 @@ def migrate_schema(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE alerts ADD COLUMN session_type TEXT NOT NULL DEFAULT ''")
     if "remote_ip" not in alerts_cols:
         cursor.execute("ALTER TABLE alerts ADD COLUMN remote_ip TEXT NOT NULL DEFAULT ''")
+    if "resolution_type" not in alerts_cols:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN resolution_type TEXT")
+    if "resolved_at" not in alerts_cols:
+        cursor.execute("ALTER TABLE alerts ADD COLUMN resolved_at TEXT")
 
     files_cols_2 = {row[1] for row in cursor.execute("PRAGMA table_info(files)").fetchall()}
     if "locked" not in files_cols_2:
@@ -1470,8 +1486,8 @@ def resolve_alert(alert_id):
     # Clear every pending alert for this file, not just the one clicked -
     # accepting the change means none of them are actionable anymore.
     cursor.execute(
-        "UPDATE alerts SET resolved = 1 WHERE file_id = ? AND resolved = 0",
-        (file_id,),
+        "UPDATE alerts SET resolved = 1, resolution_type = 'resolved', resolved_at = ? WHERE file_id = ? AND resolved = 0",
+        (timestamp, file_id),
     )
     conn.commit()
     conn.close()
@@ -1536,8 +1552,8 @@ def reverse_file(file_id):
         (file_id, restored_hash, timestamp, 'restored'),
     )
     cursor.execute(
-        "UPDATE alerts SET resolved = 1 WHERE file_id = ? AND resolved = 0",
-        (file_id,),
+        "UPDATE alerts SET resolved = 1, resolution_type = 'reversed', resolved_at = ? WHERE file_id = ? AND resolved = 0",
+        (timestamp, file_id),
     )
     conn.commit()
     conn.close()
@@ -2198,6 +2214,34 @@ def cloud_restore():
         return jsonify({"success": False, "message": f"Could not write the restored file: {exc}"}), 400
 
     return jsonify({"success": True, "message": f"Restored to {destination_path}."})
+
+
+@app.route('/api/cloud/backup/<int:backup_id>/delete', methods=['POST'])
+def cloud_delete_backup(backup_id):
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM cloud_backups WHERE id = ? AND user_id = ?", (backup_id, user_id))
+    backup_row = cursor.fetchone()
+    if not backup_row:
+        conn.close()
+        return jsonify({"success": False, "message": "Backup not found."}), 404
+
+    access_token = get_valid_google_token(user_id)
+    if access_token:
+        google_drive_delete(access_token, backup_row["remote_file_id"])
+        # Proceed even if the Drive delete fails (e.g. already removed
+        # manually) - don't leave an orphaned local record either way.
+
+    cursor.execute("DELETE FROM cloud_backups WHERE id = ?", (backup_id,))
+    conn.commit()
+    conn.close()
+
+    return jsonify({"success": True, "message": f"{backup_row['original_name']} deleted."})
 
 
 # ===== Secure Cloud Recovery Module: Subscription Manager =====
