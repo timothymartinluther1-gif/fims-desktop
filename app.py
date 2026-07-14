@@ -523,7 +523,7 @@ def postgrest_request(method: str, table: str, access_token: str, **kwargs) -> t
 def storage_upload(access_token: str, path: str, data: bytes) -> tuple[bool, Any]:
     try:
         resp = requests.post(
-            f"{SUPABASE_URL}/storage/v1/object/fims-transfers/{path}",
+            f"{SUPABASE_URL}/storage/v1/object/fims-transfer/{path}",
             headers={
                 "apikey": SUPABASE_ANON_KEY,
                 "Authorization": f"Bearer {access_token}",
@@ -540,7 +540,7 @@ def storage_upload(access_token: str, path: str, data: bytes) -> tuple[bool, Any
 def storage_download(access_token: str, path: str) -> tuple[bool, bytes]:
     try:
         resp = requests.get(
-            f"{SUPABASE_URL}/storage/v1/object/fims-transfers/{path}",
+            f"{SUPABASE_URL}/storage/v1/object/fims-transfer/{path}",
             headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"},
             timeout=60,
         )
@@ -552,7 +552,7 @@ def storage_download(access_token: str, path: str) -> tuple[bool, bytes]:
 def storage_delete(access_token: str, path: str) -> bool:
     try:
         resp = requests.delete(
-            f"{SUPABASE_URL}/storage/v1/object/fims-transfers/{path}",
+            f"{SUPABASE_URL}/storage/v1/object/fims-transfer/{path}",
             headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {access_token}"},
             timeout=15,
         )
