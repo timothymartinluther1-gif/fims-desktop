@@ -312,17 +312,9 @@ async function loadDashboardData() {
     const alertsData = await apiRequest(`/api/alerts?user_id=${state.currentUser.id}`);
     state.alerts = alertsData.alerts || [];
 
-    // Load users (only for admin)
-    if (isAdminUser()) {
-      try {
-        const usersData = await apiRequest(`/api/users?user_id=${state.currentUser.id}`);
-        state.users = usersData.users || [];
-      } catch (e) {
-        state.users = [];
-      }
-    } else {
-      state.users = [];
-    }
+    // Admin user listing was intentionally moved to the Supabase dashboard
+    // (see /api/users route) rather than polled here every 3 seconds.
+    state.users = [];
 
     if (state.selectedFileId && !state.files.some((file) => file.id === state.selectedFileId)) {
       clearFileSelection();

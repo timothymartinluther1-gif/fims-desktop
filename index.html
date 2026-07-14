@@ -172,7 +172,6 @@
         <button class="sidebar-nav-btn" data-view="cloud"><span class="nav-icon">☁️</span><span class="nav-label">Cloud Backup</span></button>
         <button class="sidebar-nav-btn" data-view="cases"><span class="nav-icon">📋</span><span class="nav-label">Cases</span></button>
         <button class="sidebar-nav-btn" data-view="transfers"><span class="nav-icon">📨</span><span class="nav-label">Transfers</span></button>
-        <button class="sidebar-nav-btn" data-view="transfers"><span class="nav-icon">📨</span><span class="nav-label">Transfers</span></button>
         <button class="sidebar-nav-btn hidden" id="adminNavBtn" data-view="admin"><span class="nav-icon">👤</span><span class="nav-label">Users (Admin)</span></button>
       </nav>
 
@@ -391,9 +390,12 @@
         <div class="dashboard-view" data-view="admin">
           <div class="table-panel user-panel">
             <div class="table-header"><h4>All Users (Admin)</h4></div>
-            <ul id="userList" class="user-list">
-              <li class="empty-state">No users found</li>
-            </ul>
+            <p class="field-hint">
+              For security, the full user list isn't loaded into this app (that would require
+              embedding a master key that could access every account). View the complete,
+              live list anytime in your Supabase dashboard under
+              <strong>Authentication &rarr; Users</strong>.
+            </p>
           </div>
         </div>
 
