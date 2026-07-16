@@ -1636,6 +1636,46 @@ def get_cases():
     return jsonify({"success": True, "cases": [row_to_dict(row) for row in rows]})
 
 
+@app.route('/api/cases/<int:case_id>/delete', methods=['POST'])
+def delete_case(case_id):
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM case_log WHERE id = ? AND user_id = ?", (case_id, user_id))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    if not deleted:
+        return jsonify({"success": False, "message": "Case not found."}), 404
+    return jsonify({"success": True, "message": "Case removed."})
+
+
+@app.route('/api/alerts/<int:alert_id>/delete', methods=['POST'])
+def delete_alert(alert_id):
+    """Password confirmation is required client-side before this is ever
+    called, same pattern as cloud backup deletion and file retrieval."""
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM alerts WHERE id = ? AND user_id = ?", (alert_id, user_id))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    if not deleted:
+        return jsonify({"success": False, "message": "Alert not found."}), 404
+    return jsonify({"success": True, "message": "Alert deleted."})
+
+
 @app.route('/api/transfer/my-code', methods=['GET'])
 def transfer_my_code():
     user_id = request.args.get('user_id')

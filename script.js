@@ -147,6 +147,46 @@ function getFileStatusClass(status) {
   }
 }
 
+function showProgressToast(message) {
+  const existingToast = document.getElementById('toast');
+  if (existingToast) existingToast.remove();
+
+  const toast = document.createElement('div');
+  toast.id = 'toast';
+  toast.className = 'app-toast';
+  toast.setAttribute('role', 'status');
+
+  const spinner = document.createElement('span');
+  spinner.className = 'app-toast-icon';
+  spinner.textContent = '⏳';
+
+  const text = document.createElement('span');
+  text.className = 'app-toast-text';
+
+  toast.appendChild(spinner);
+  toast.appendChild(text);
+  document.body.appendChild(toast);
+
+  const startedAt = Date.now();
+  function render(label) {
+    const seconds = Math.floor((Date.now() - startedAt) / 1000);
+    text.textContent = `${label} (${seconds}s elapsed)`;
+  }
+  render(message);
+  const interval = setInterval(() => render(text.dataset.label || message), 1000);
+
+  return {
+    update(label) {
+      text.dataset.label = label;
+      render(label);
+    },
+    close() {
+      clearInterval(interval);
+      if (toast.parentNode) toast.remove();
+    },
+  };
+}
+
 function isValidEmail(email) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
@@ -455,6 +495,24 @@ document.getElementById('statSafeCard')?.addEventListener('click', () => setFile
 document.getElementById('statTamperedCard')?.addEventListener('click', () => setFileFilter('tampered'));
 document.getElementById('statFilesCard')?.addEventListener('click', () => setFileFilter('all'));
 document.getElementById('statAlertsCard')?.addEventListener('click', () => switchDashboardView('alerts'));
+
+async function deleteAlert(alertId) {
+  const confirmed = await requestPasswordConfirmation();
+  if (!confirmed) return;
+  if (!confirm('Permanently delete this alert? This cannot be undone.')) return;
+
+  try {
+    await apiRequest(`/api/alerts/${alertId}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id }),
+    });
+    showToast('Alert deleted.');
+    await loadDashboardData();
+  } catch (error) {
+    console.error('Delete alert failed:', error);
+    showToast(error.message || 'Could not delete alert', 'error');
+  }
+}
 
 async function resolveAlert(alertId) {
   try {
@@ -816,12 +874,20 @@ async function refreshCasesList() {
   }
 }
 
+let currentCaseFilter = 'all';
+
 function renderCasesList(filter) {
+  currentCaseFilter = filter;
   const tbody = document.getElementById('caseTableBody');
-  const rows = filter === 'all' ? cachedCases : cachedCases.filter((c) => c.action_type === filter);
+  const searchTerm = (document.getElementById('caseSearchInput')?.value || '').trim().toLowerCase();
+
+  let rows = filter === 'all' ? cachedCases : cachedCases.filter((c) => c.action_type === filter);
+  if (searchTerm) {
+    rows = rows.filter((c) => c.file_name.toLowerCase().includes(searchTerm));
+  }
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="3" class="empty-row">No cases yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="empty-row">No cases yet</td></tr>';
     return;
   }
 
@@ -831,9 +897,30 @@ function renderCasesList(filter) {
       <td>${c.file_name}</td>
       <td>${actionLabel[c.action_type] || c.action_type}</td>
       <td>${formatTime(c.timestamp)}</td>
+      <td><button class="ghost-btn" style="padding: 4px 10px; font-size: 0.78rem;" onclick="deleteCase(${c.id})">Delete</button></td>
     </tr>
   `).join('');
 }
+
+async function deleteCase(caseId) {
+  if (!confirm('Remove this entry from your case history?')) return;
+  try {
+    await apiRequest(`/api/cases/${caseId}/delete`, {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id }),
+    });
+    cachedCases = cachedCases.filter((c) => c.id !== caseId);
+    renderCasesList(currentCaseFilter);
+    showToast('Case removed.');
+  } catch (error) {
+    console.error('Delete case failed:', error);
+    showToast(error.message || 'Could not delete case', 'error');
+  }
+}
+
+document.getElementById('fileSearchInput')?.addEventListener('input', () => renderDashboard());
+
+document.getElementById('caseSearchInput')?.addEventListener('input', () => renderCasesList(currentCaseFilter));
 
 document.querySelectorAll('[data-case-filter]').forEach((btn) => {
   btn.addEventListener('click', () => {
@@ -889,8 +976,9 @@ document.getElementById('sendTransferForm')?.addEventListener('submit', async (e
     return;
   }
 
+  let progress;
   try {
-    showToast('Encrypting and sending...');
+    progress = showProgressToast('Encrypting and sending...');
     const response = await apiRequest('/api/transfer/send', {
       method: 'POST',
       body: JSON.stringify({
@@ -901,11 +989,13 @@ document.getElementById('sendTransferForm')?.addEventListener('submit', async (e
         compress,
       }),
     });
+    progress.close();
     showToast(response.message || 'Sent.');
     document.getElementById('sendTransferForm').reset();
     document.getElementById('transferFilePathInput').value = '';
     await refreshSentTransfers();
   } catch (error) {
+    if (progress) progress.close();
     console.error('Send failed:', error);
     showToast(error.message || 'Could not send file', 'error');
   }
@@ -987,8 +1077,9 @@ async function acceptTransfer(transferId, fileName) {
   const destinationPath = await window.pywebview.api.pick_save_location(fileName);
   if (!destinationPath) return;
 
+  let progress;
   try {
-    showToast('Downloading and decrypting...');
+    progress = showProgressToast('Downloading and decrypting...');
     const response = await apiRequest('/api/transfer/accept', {
       method: 'POST',
       body: JSON.stringify({
@@ -998,9 +1089,11 @@ async function acceptTransfer(transferId, fileName) {
         verify_hash: verifyHash,
       }),
     });
+    progress.close();
     showToast(response.message || 'Received.');
     await refreshIncomingTransfers();
   } catch (error) {
+    if (progress) progress.close();
     console.error('Accept failed:', error);
     showToast(error.message || 'Could not accept transfer', 'error');
   }
@@ -1037,13 +1130,18 @@ function renderDashboard() {
   alertCount.textContent = state.stats.alerts || 0;
   fileCount.textContent = state.stats.files || 0;
 
-  // Render files table (respecting the active stat-card filter, if any)
-  const filteredFiles = state.fileFilter === 'all'
+  // Render files table (respecting the active stat-card filter and search term, if any)
+  let filteredFiles = state.fileFilter === 'all'
     ? state.files
     : state.files.filter((file) => {
         const status = file.status || 'monitoring';
         return state.fileFilter === 'monitoring' ? status === 'monitoring' : status !== 'monitoring';
       });
+
+  const fileSearchTerm = (document.getElementById('fileSearchInput')?.value || '').trim().toLowerCase();
+  if (fileSearchTerm) {
+    filteredFiles = filteredFiles.filter((file) => file.name.toLowerCase().includes(fileSearchTerm));
+  }
 
   const filterIndicator = document.getElementById('fileFilterIndicator');
   if (state.fileFilter === 'all') {
@@ -1131,12 +1229,13 @@ function renderDashboard() {
             <div>${deviceLine}</div>
             <div>${statusLine}</div>
           </div>
-          ${!isResolved ? `
-            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            ${!isResolved ? `
               <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="event.stopPropagation(); reverseFile(${alert.file_id})">Reverse</button>
               <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(212, 163, 115, 0.15); color: var(--accent-2);" onclick="event.stopPropagation(); resolveAlert(${alert.id})">Resolve</button>
-            </div>
-          ` : ''}
+            ` : ''}
+            <button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="event.stopPropagation(); deleteAlert(${alert.id})">Delete</button>
+          </div>
         </div>
       `;
       alertList.appendChild(item);

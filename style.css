@@ -896,6 +896,16 @@ button {
   border-radius: 999px;
 }
 
+.search-input {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  min-width: 200px;
+}
+
 #fileFilterIndicator a {
   color: var(--accent-2);
 }

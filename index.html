@@ -243,6 +243,7 @@
           <div class="table-panel" id="filesTablePanel">
             <div class="table-header">
               <h4>Monitored Files</h4>
+              <input type="text" id="fileSearchInput" placeholder="Search files..." class="search-input" />
               <span id="fileFilterIndicator" class="hidden"></span>
             </div>
             <div class="table-wrap">
@@ -318,12 +319,16 @@
           <div class="table-panel">
             <div class="table-header">
               <h4>Cases</h4>
-              <div class="row-actions">
-                <button class="dashboard-nav-btn active" data-case-filter="all">All</button>
-                <button class="dashboard-nav-btn" data-case-filter="reviewed">Reviewed</button>
-                <button class="dashboard-nav-btn" data-case-filter="resolved">Resolved</button>
-                <button class="dashboard-nav-btn" data-case-filter="reversed">Reversed</button>
-              </div>
+              <input type="text" id="caseSearchInput" placeholder="Search by file name..." class="search-input" />
+            </div>
+            <div class="row-actions" style="margin-bottom: 12px; flex-wrap: wrap;">
+              <button class="dashboard-nav-btn active" data-case-filter="all">All</button>
+              <button class="dashboard-nav-btn" data-case-filter="reviewed">Reviewed</button>
+              <button class="dashboard-nav-btn" data-case-filter="resolved">Resolved</button>
+              <button class="dashboard-nav-btn" data-case-filter="reversed">Reversed</button>
+              <button class="dashboard-nav-btn" data-case-filter="sent">Sent</button>
+              <button class="dashboard-nav-btn" data-case-filter="received">Received</button>
+              <button class="dashboard-nav-btn" data-case-filter="rejected">Rejected</button>
             </div>
             <div class="table-wrap">
               <table>
@@ -332,10 +337,11 @@
                     <th>File</th>
                     <th>Action</th>
                     <th>When</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody id="caseTableBody">
-                  <tr><td colspan="3" class="empty-row">No cases yet</td></tr>
+                  <tr><td colspan="4" class="empty-row">No cases yet</td></tr>
                 </tbody>
               </table>
             </div>
