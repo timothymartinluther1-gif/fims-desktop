@@ -599,6 +599,78 @@ def lookup_user_by_code(access_token: str, code: str) -> Optional[dict]:
     return None
 
 
+# ===== Local Network (short-range) transfer =====
+# No internet, no Supabase, zero mobile/WiFi data usage - a direct
+# connection between two devices on the same network. Instead of
+# scanning for nearby devices (unreliable, needs extra libraries), the
+# receiver is simply shown their own address and a one-time PIN to share
+# out loud - the PIN exists so that anyone else on the same network
+# (e.g. a shared cafe WiFi) can't send you files without your say-so.
+
+def get_local_ip() -> str:
+    import socket as _socket
+    s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))  # no data is actually sent, just used to pick the right network interface
+        return s.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def find_free_port_for_lan(preferred: int = 5730) -> int:
+    import socket as _socket
+    for port in (preferred, 0):
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        try:
+            s.bind(("0.0.0.0", port))
+            return s.getsockname()[1]
+        except OSError:
+            continue
+        finally:
+            s.close()
+    raise RuntimeError("Could not find a free port for local network transfer")
+
+
+lan_state = {
+    "active": False,
+    "pin": None,
+    "port": None,
+    "incoming": None,  # holds one pending received item awaiting the user's accept/reject
+}
+
+lan_app = Flask(__name__ + "_lan")
+
+
+@lan_app.route('/receive', methods=['POST'])
+def lan_receive():
+    if not lan_state["active"]:
+        return jsonify({"success": False, "message": "Not currently receiving."}), 403
+
+    pin = request.form.get('pin')
+    if pin != lan_state["pin"]:
+        return jsonify({"success": False, "message": "Incorrect PIN."}), 403
+
+    if 'file' not in request.files:
+        return jsonify({"success": False, "message": "No file included."}), 400
+
+    encrypted_bytes = request.files['file'].read()
+    lan_state["incoming"] = {
+        "sender_name": request.form.get('sender_name', 'Unknown'),
+        "file_name": request.form.get('file_name', 'file'),
+        "trusted_hash": request.form.get('trusted_hash'),
+        "transfer_key": request.form.get('transfer_key'),
+        "compressed": request.form.get('compressed') == 'true',
+        "file_size": len(encrypted_bytes),
+        "encrypted_bytes": encrypted_bytes,
+        "received_at": now_iso(),
+    }
+    lan_state["active"] = False  # one transfer per receiving session, keeps the open window short
+
+    return jsonify({"success": True, "message": "Delivered. Waiting for the receiver to approve it."})
+
+
 def resource_path() -> Path:
     """Directory containing bundled read-only assets (index.html, script.js, style.css).
 
@@ -1934,6 +2006,178 @@ def transfer_accept():
     log_case(user_id, None, record["file_name"], "received")
 
     return jsonify({"success": True, "message": f"File received and saved. Integrity: {integrity_note}."})
+
+
+@app.route('/api/lan/start-receiving', methods=['POST'])
+def lan_start_receiving():
+    import random
+    import string
+
+    if lan_state["active"]:
+        return jsonify({
+            "success": True,
+            "ip": get_local_ip(), "port": lan_state["port"], "pin": lan_state["pin"],
+        })
+
+    port = find_free_port_for_lan()
+    pin = "".join(random.choice(string.digits) for _ in range(6))
+
+    lan_state.update({"active": True, "pin": pin, "port": port, "incoming": None})
+
+    thread = threading.Thread(
+        target=lambda: lan_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False),
+        daemon=True,
+    )
+    thread.start()
+
+    return jsonify({"success": True, "ip": get_local_ip(), "port": port, "pin": pin})
+
+
+@app.route('/api/lan/stop-receiving', methods=['POST'])
+def lan_stop_receiving():
+    lan_state["active"] = False
+    return jsonify({"success": True, "message": "Stopped receiving."})
+
+
+@app.route('/api/lan/incoming', methods=['GET'])
+def lan_incoming():
+    incoming = lan_state.get("incoming")
+    if not incoming:
+        return jsonify({"success": True, "incoming": None})
+
+    return jsonify({
+        "success": True,
+        "incoming": {
+            "sender_name": incoming["sender_name"],
+            "file_name": incoming["file_name"],
+            "file_size": incoming["file_size"],
+            "compressed": incoming["compressed"],
+            "received_at": incoming["received_at"],
+        },
+    })
+
+
+@app.route('/api/lan/accept', methods=['POST'])
+def lan_accept():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    destination_path = data.get('destination_path')
+    verify_hash = data.get('verify_hash', True)
+
+    incoming = lan_state.get("incoming")
+    if not incoming:
+        return jsonify({"success": False, "message": "Nothing to accept."}), 404
+    if not user_id or not destination_path:
+        return jsonify({"success": False, "message": "user_id and destination_path are required."}), 400
+
+    try:
+        payload = decrypt_bytes(incoming["encrypted_bytes"], incoming["transfer_key"].encode("utf-8"))
+    except Exception as exc:
+        return jsonify({"success": False, "message": f"Could not decrypt the file: {exc}"}), 400
+
+    integrity_note = "not checked (skipped by user)"
+    if verify_hash:
+        if compute_hash(payload) != incoming["trusted_hash"]:
+            lan_state["incoming"] = None
+            log_case(user_id, None, incoming["file_name"], "rejected")
+            return jsonify({
+                "success": False,
+                "message": "Integrity check failed: this file doesn't match what the sender sent. It was not saved.",
+            }), 400
+        integrity_note = "verified, matches sender's hash"
+
+    try:
+        if incoming["compressed"]:
+            import io
+            import zipfile
+            with zipfile.ZipFile(io.BytesIO(payload)) as zf:
+                names = zf.namelist()
+                payload = zf.read(names[0]) if names else b""
+
+        dest = Path(destination_path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(payload)
+    except OSError as exc:
+        return jsonify({"success": False, "message": f"Could not save the file: {exc}"}), 400
+
+    log_case(user_id, None, incoming["file_name"], "received")
+    lan_state["incoming"] = None
+
+    return jsonify({"success": True, "message": f"File received and saved. Integrity: {integrity_note}."})
+
+
+@app.route('/api/lan/reject', methods=['POST'])
+def lan_reject():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    incoming = lan_state.get("incoming")
+    if incoming and user_id:
+        log_case(user_id, None, incoming["file_name"], "rejected")
+    lan_state["incoming"] = None
+    return jsonify({"success": True, "message": "Rejected."})
+
+
+@app.route('/api/lan/send', methods=['POST'])
+def lan_send():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    sender_name = data.get('sender_name', 'User')
+    file_path = data.get('file_path')
+    receiver_ip = data.get('receiver_ip')
+    receiver_port = data.get('receiver_port')
+    pin = data.get('pin')
+    compress = bool(data.get('compress'))
+
+    if not all([user_id, file_path, receiver_ip, receiver_port, pin]):
+        return jsonify({"success": False, "message": "file_path, receiver_ip, receiver_port, and pin are all required."}), 400
+
+    path = Path(file_path)
+    try:
+        original_bytes = path.read_bytes()
+    except OSError as exc:
+        return jsonify({"success": False, "message": f"Could not read the file: {exc}"}), 400
+
+    file_name = path.name
+    payload = original_bytes
+
+    if compress:
+        import io
+        import zipfile
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(path.name, original_bytes)
+        payload = buffer.getvalue()
+        file_name = path.name + ".zip"
+
+    trusted_hash = compute_hash(payload)
+
+    from cryptography.fernet import Fernet
+    transfer_key = Fernet.generate_key()
+    encrypted_payload = encrypt_bytes(payload, transfer_key)
+
+    try:
+        resp = requests.post(
+            f"http://{receiver_ip}:{receiver_port}/receive",
+            data={
+                "pin": pin,
+                "sender_name": sender_name,
+                "file_name": file_name,
+                "trusted_hash": trusted_hash,
+                "transfer_key": transfer_key.decode("utf-8"),
+                "compressed": "true" if compress else "false",
+            },
+            files={"file": ("payload.bin", encrypted_payload, "application/octet-stream")},
+            timeout=60,
+        )
+        body = resp.json() if resp.content else {}
+    except requests.RequestException as exc:
+        return jsonify({"success": False, "message": f"Could not reach {receiver_ip}:{receiver_port}. Make sure both devices are on the same network. ({exc})"}), 400
+
+    if not resp.ok:
+        return jsonify({"success": False, "message": body.get("message", "Send failed.")}), 400
+
+    log_case(user_id, None, file_name, "sent")
+    return jsonify({"success": True, "message": f"{file_name} sent directly over the local network."})
 
 
 def _run_icacls(args: list) -> tuple[bool, str]:

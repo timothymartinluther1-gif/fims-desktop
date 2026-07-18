@@ -352,7 +352,7 @@
         <div class="dashboard-view" data-view="transfers">
           <div class="panel">
             <div class="table-header"><h4>Your Code</h4></div>
-            <p class="field-hint" style="margin-bottom: 8px;">Share this code with someone to receive a file from them.</p>
+            <p class="field-hint" style="margin-bottom: 8px;">Share this code with someone to receive a file from them over the internet (Long Range).</p>
             <div class="row-actions" style="align-items: center;">
               <code id="myTransferCode" style="font-size: 1.1rem; background: var(--bg-secondary); padding: 8px 16px; border-radius: 8px;">Loading...</code>
               <button id="copyCodeBtn" class="ghost-btn">Copy</button>
@@ -361,12 +361,25 @@
 
           <div class="panel">
             <div class="table-header"><h4>Send a File</h4></div>
+            <div class="row-actions" style="margin-bottom: 16px;">
+              <button class="dashboard-nav-btn active" data-range="long" id="rangeLongBtn">🌐 Long Range (internet)</button>
+              <button class="dashboard-nav-btn" data-range="short" id="rangeShortBtn">📶 Short Range (same WiFi, no data used)</button>
+            </div>
+
             <form id="sendTransferForm">
-              <div class="field-group">
+              <div class="field-group" id="longRangeFields">
                 <label for="receiverCodeInput">Receiver's code</label>
-                <input type="text" id="receiverCodeInput" placeholder="FIMS-XXXX-XXXX" required />
+                <input type="text" id="receiverCodeInput" placeholder="FIMS-XXXX-XXXX" />
               </div>
-              <div class="path-row" style="margin-bottom: 12px;">
+              <div class="field-group hidden" id="shortRangeFields">
+                <label for="receiverIpInput">Receiver's IP address (shown on their screen)</label>
+                <input type="text" id="receiverIpInput" placeholder="192.168.1.42" />
+                <div class="row-actions" style="margin-top: 8px;">
+                  <input type="text" id="receiverPortInput" placeholder="Port" style="max-width: 100px;" />
+                  <input type="text" id="receiverPinInput" placeholder="6-digit PIN" style="max-width: 140px;" />
+                </div>
+              </div>
+              <div class="path-row" style="margin: 12px 0;">
                 <input type="text" id="transferFilePathInput" placeholder="Choose a file..." readonly />
                 <button type="button" id="browseTransferFileBtn" class="ghost-btn">Browse…</button>
               </div>
@@ -377,8 +390,35 @@
             </form>
           </div>
 
+          <div class="panel">
+            <div class="table-header"><h4>Receive over Local Network</h4></div>
+            <p class="field-hint" style="margin-bottom: 12px;">No internet or mobile data needed, just the same WiFi/network as the sender.</p>
+            <div id="lanReceiveIdle">
+              <button id="startLanReceivingBtn" class="ghost-btn">Start Receiving</button>
+            </div>
+            <div id="lanReceiveActive" class="hidden">
+              <p class="field-hint">Share these with the sender:</p>
+              <div style="display: flex; gap: 16px; flex-wrap: wrap; margin: 8px 0 12px;">
+                <div><small class="field-hint">IP Address</small><br><code id="lanIpDisplay" style="font-size: 1rem;"></code></div>
+                <div><small class="field-hint">Port</small><br><code id="lanPortDisplay" style="font-size: 1rem;"></code></div>
+                <div><small class="field-hint">PIN</small><br><code id="lanPinDisplay" style="font-size: 1rem; color: var(--accent-2);"></code></div>
+              </div>
+              <button id="stopLanReceivingBtn" class="ghost-btn">Stop Receiving</button>
+            </div>
+            <div id="lanIncomingPrompt" class="hidden" style="margin-top: 16px; padding: 14px; background: var(--bg-secondary); border-radius: 10px;">
+              <p><strong id="lanIncomingText"></strong></p>
+              <label class="field-hint" style="display: flex; align-items: center; gap: 8px; margin: 8px 0;">
+                <input type="checkbox" id="lanVerifyHashInput" checked /> Verify file integrity before saving
+              </label>
+              <div class="row-actions">
+                <button id="lanAcceptBtn" class="ghost-btn" style="background: rgba(31, 190, 128, 0.1); color: var(--success);">Accept</button>
+                <button id="lanRejectBtn" class="ghost-btn" style="background: rgba(255, 93, 115, 0.1); color: #ffb2bf;">Reject</button>
+              </div>
+            </div>
+          </div>
+
           <div class="table-panel">
-            <div class="table-header"><h4>Incoming Requests</h4></div>
+            <div class="table-header"><h4>Incoming Requests (Long Range)</h4></div>
             <ul id="incomingTransferList" class="user-list">
               <li class="empty-state">No incoming requests</li>
             </ul>

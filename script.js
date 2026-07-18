@@ -965,9 +965,26 @@ document.getElementById('browseTransferFileBtn')?.addEventListener('click', asyn
   if (filePath) document.getElementById('transferFilePathInput').value = filePath;
 });
 
+let transferRange = 'long';
+
+document.getElementById('rangeLongBtn')?.addEventListener('click', () => {
+  transferRange = 'long';
+  document.getElementById('rangeLongBtn').classList.add('active');
+  document.getElementById('rangeShortBtn').classList.remove('active');
+  document.getElementById('longRangeFields').classList.remove('hidden');
+  document.getElementById('shortRangeFields').classList.add('hidden');
+});
+
+document.getElementById('rangeShortBtn')?.addEventListener('click', () => {
+  transferRange = 'short';
+  document.getElementById('rangeShortBtn').classList.add('active');
+  document.getElementById('rangeLongBtn').classList.remove('active');
+  document.getElementById('shortRangeFields').classList.remove('hidden');
+  document.getElementById('longRangeFields').classList.add('hidden');
+});
+
 document.getElementById('sendTransferForm')?.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const receiverCode = document.getElementById('receiverCodeInput').value.trim();
   const filePath = document.getElementById('transferFilePathInput').value;
   const compress = document.getElementById('compressTransferInput').checked;
 
@@ -978,27 +995,135 @@ document.getElementById('sendTransferForm')?.addEventListener('submit', async (e
 
   let progress;
   try {
-    progress = showProgressToast('Encrypting and sending...');
-    const response = await apiRequest('/api/transfer/send', {
-      method: 'POST',
-      body: JSON.stringify({
-        user_id: state.currentUser.id,
-        sender_name: state.currentUser.name,
-        file_path: filePath,
-        receiver_code: receiverCode,
-        compress,
-      }),
-    });
+    let response;
+    if (transferRange === 'long') {
+      const receiverCode = document.getElementById('receiverCodeInput').value.trim();
+      if (!receiverCode) {
+        showToast("Enter the receiver's code.", 'error');
+        return;
+      }
+      progress = showProgressToast('Encrypting and sending...');
+      response = await apiRequest('/api/transfer/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: state.currentUser.id,
+          sender_name: state.currentUser.name,
+          file_path: filePath,
+          receiver_code: receiverCode,
+          compress,
+        }),
+      });
+      await refreshSentTransfers();
+    } else {
+      const receiverIp = document.getElementById('receiverIpInput').value.trim();
+      const receiverPort = document.getElementById('receiverPortInput').value.trim();
+      const receiverPin = document.getElementById('receiverPinInput').value.trim();
+      if (!receiverIp || !receiverPort || !receiverPin) {
+        showToast("Enter the receiver's IP, port, and PIN.", 'error');
+        return;
+      }
+      progress = showProgressToast('Encrypting and sending over local network...');
+      response = await apiRequest('/api/lan/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: state.currentUser.id,
+          sender_name: state.currentUser.name,
+          file_path: filePath,
+          receiver_ip: receiverIp,
+          receiver_port: receiverPort,
+          pin: receiverPin,
+          compress,
+        }),
+      });
+    }
     progress.close();
     showToast(response.message || 'Sent.');
     document.getElementById('sendTransferForm').reset();
     document.getElementById('transferFilePathInput').value = '';
-    await refreshSentTransfers();
   } catch (error) {
     if (progress) progress.close();
     console.error('Send failed:', error);
     showToast(error.message || 'Could not send file', 'error');
   }
+});
+
+// --- Local network receiving ---
+let lanPollInterval = null;
+
+document.getElementById('startLanReceivingBtn')?.addEventListener('click', async () => {
+  try {
+    const response = await apiRequest('/api/lan/start-receiving', { method: 'POST' });
+    document.getElementById('lanIpDisplay').textContent = response.ip;
+    document.getElementById('lanPortDisplay').textContent = response.port;
+    document.getElementById('lanPinDisplay').textContent = response.pin;
+    document.getElementById('lanReceiveIdle').classList.add('hidden');
+    document.getElementById('lanReceiveActive').classList.remove('hidden');
+    showToast('Ready to receive. Share the IP, port, and PIN with the sender.');
+
+    if (lanPollInterval) clearInterval(lanPollInterval);
+    lanPollInterval = setInterval(checkLanIncoming, 2000);
+    checkLanIncoming();
+  } catch (error) {
+    showToast(error.message || 'Could not start receiving', 'error');
+  }
+});
+
+document.getElementById('stopLanReceivingBtn')?.addEventListener('click', async () => {
+  await apiRequest('/api/lan/stop-receiving', { method: 'POST' });
+  if (lanPollInterval) clearInterval(lanPollInterval);
+  document.getElementById('lanReceiveIdle').classList.remove('hidden');
+  document.getElementById('lanReceiveActive').classList.add('hidden');
+  showToast('Stopped receiving.');
+});
+
+async function checkLanIncoming() {
+  try {
+    const data = await apiRequest('/api/lan/incoming');
+    const prompt = document.getElementById('lanIncomingPrompt');
+    if (data.incoming) {
+      document.getElementById('lanIncomingText').textContent =
+        `${data.incoming.sender_name} wants to send "${data.incoming.file_name}" (${formatBytes(data.incoming.file_size)})`;
+      prompt.classList.remove('hidden');
+    } else {
+      prompt.classList.add('hidden');
+    }
+  } catch (error) {
+    // silent - just means nothing incoming or a transient poll miss
+  }
+}
+
+document.getElementById('lanAcceptBtn')?.addEventListener('click', async () => {
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast('Requires the desktop app window.', 'error');
+    return;
+  }
+  const destinationPath = await window.pywebview.api.pick_save_location();
+  if (!destinationPath) return;
+
+  const verifyHash = document.getElementById('lanVerifyHashInput').checked;
+  let progress;
+  try {
+    progress = showProgressToast('Decrypting and saving...');
+    const response = await apiRequest('/api/lan/accept', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id, destination_path: destinationPath, verify_hash: verifyHash }),
+    });
+    progress.close();
+    showToast(response.message || 'Received.');
+    document.getElementById('lanIncomingPrompt').classList.add('hidden');
+  } catch (error) {
+    if (progress) progress.close();
+    showToast(error.message || 'Could not accept file', 'error');
+  }
+});
+
+document.getElementById('lanRejectBtn')?.addEventListener('click', async () => {
+  await apiRequest('/api/lan/reject', {
+    method: 'POST',
+    body: JSON.stringify({ user_id: state.currentUser.id }),
+  });
+  document.getElementById('lanIncomingPrompt').classList.add('hidden');
+  showToast('Rejected.');
 });
 
 async function refreshIncomingTransfers() {
