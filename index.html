@@ -172,6 +172,7 @@
         <button class="sidebar-nav-btn" data-view="cloud"><span class="nav-icon">☁️</span><span class="nav-label">Cloud Backup</span></button>
         <button class="sidebar-nav-btn" data-view="cases"><span class="nav-icon">📋</span><span class="nav-label">Cases</span></button>
         <button class="sidebar-nav-btn" data-view="transfers"><span class="nav-icon">📨</span><span class="nav-label">Transfers</span></button>
+        <button class="sidebar-nav-btn" data-view="remote"><span class="nav-icon">📱</span><span class="nav-label">Remote Access</span></button>
         <button class="sidebar-nav-btn hidden" id="adminNavBtn" data-view="admin"><span class="nav-icon">👤</span><span class="nav-label">Users (Admin)</span></button>
       </nav>
 
@@ -428,6 +429,50 @@
             <div class="table-header"><h4>Sent History</h4></div>
             <ul id="sentTransferList" class="user-list">
               <li class="empty-state">Nothing sent yet</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- ===== REMOTE ACCESS VIEW ===== -->
+        <div class="dashboard-view" data-view="remote">
+          <div class="panel">
+            <div class="table-header"><h4>Pair a Phone</h4></div>
+            <p class="field-hint" style="margin-bottom: 12px;">
+              Open the FIMS app on your phone, log in with this same account, then enter the code below.
+              It proves someone with the password also has their hands on this desktop right now.
+            </p>
+
+            <div id="remoteNotPaired">
+              <div id="remoteIdle">
+                <button id="generatePairingCodeBtn" class="submit-btn" style="max-width: 220px;">Generate Pairing Code</button>
+              </div>
+              <div id="remotePendingCode" class="hidden" style="margin-top: 16px;">
+                <p class="field-hint">Enter this on your phone within 10 minutes:</p>
+                <div style="display: flex; align-items: center; gap: 16px; margin: 8px 0;">
+                  <code id="pairingCodeDisplay" style="font-size: 2rem; letter-spacing: 4px; background: var(--bg-secondary); padding: 10px 20px; border-radius: 10px;"></code>
+                  <span id="pairingCodeTimer" class="field-hint"></span>
+                </div>
+                <button id="cancelPairingBtn" class="ghost-btn">Cancel</button>
+              </div>
+            </div>
+
+            <div id="remotePaired" class="hidden">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+                <span class="status-pill status-monitoring">● Paired</span>
+                <span id="pairedPhoneLabel" class="field-hint"></span>
+              </div>
+              <button id="unpairBtn" class="ghost-btn" style="background: rgba(255, 93, 115, 0.1); color: #ffb2bf;">Revoke Remote Access</button>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="table-header"><h4>What a paired phone can do</h4></div>
+            <ul class="user-list">
+              <li>✅ View monitored files, alerts, and cases live</li>
+              <li>✅ Review a file (read-only inspection, logged as a case)</li>
+              <li>✅ Send and receive files, and use cloud backup, on its own</li>
+              <li>🚫 Cannot Resolve or Reverse a tampered file - desktop only</li>
+              <li>🚫 Cannot add a new file for this desktop to monitor</li>
             </ul>
           </div>
         </div>

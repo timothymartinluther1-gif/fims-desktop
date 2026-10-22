@@ -447,7 +447,122 @@ function switchDashboardView(viewName) {
   });
   if (viewName === 'cases') refreshCasesList();
   if (viewName === 'transfers') refreshTransfersView();
+  if (viewName === 'remote') refreshRemotePanel();
 }
+
+// ===== Remote Access (phone pairing) =====
+
+let pairingPollTimer = null;
+let pairingCountdownTimer = null;
+
+function stopPairingPolling() {
+  if (pairingPollTimer) clearInterval(pairingPollTimer);
+  if (pairingCountdownTimer) clearInterval(pairingCountdownTimer);
+  pairingPollTimer = null;
+  pairingCountdownTimer = null;
+}
+
+function renderPairingCountdown(expiresAt) {
+  const timerEl = document.getElementById('pairingCodeTimer');
+  if (!timerEl) return;
+  if (pairingCountdownTimer) clearInterval(pairingCountdownTimer);
+
+  const expiry = new Date(expiresAt.replace('Z', '') + 'Z').getTime();
+  pairingCountdownTimer = setInterval(() => {
+    const secondsLeft = Math.max(0, Math.round((expiry - Date.now()) / 1000));
+    const minutes = Math.floor(secondsLeft / 60);
+    const seconds = secondsLeft % 60;
+    timerEl.textContent = `Expires in ${minutes}:${String(seconds).padStart(2, '0')}`;
+    if (secondsLeft <= 0) {
+      clearInterval(pairingCountdownTimer);
+      refreshRemotePanel();
+    }
+  }, 1000);
+}
+
+async function refreshRemotePanel() {
+  if (!state.currentUser?.id) return;
+
+  try {
+    const data = await apiRequest(`/api/pairing/status?user_id=${state.currentUser.id}`);
+    const notPairedEl = document.getElementById('remoteNotPaired');
+    const pairedEl = document.getElementById('remotePaired');
+    const idleEl = document.getElementById('remoteIdle');
+    const pendingEl = document.getElementById('remotePendingCode');
+
+    if (data.paired) {
+      notPairedEl?.classList.add('hidden');
+      pairedEl?.classList.remove('hidden');
+      const labelEl = document.getElementById('pairedPhoneLabel');
+      if (labelEl) labelEl.textContent = data.phone_label ? `(${data.phone_label})` : '';
+      stopPairingPolling();
+    } else {
+      pairedEl?.classList.add('hidden');
+      notPairedEl?.classList.remove('hidden');
+
+      if (data.pending) {
+        idleEl?.classList.add('hidden');
+        pendingEl?.classList.remove('hidden');
+        if (data.expires_at) renderPairingCountdown(data.expires_at);
+        if (!pairingPollTimer) {
+          pairingPollTimer = setInterval(refreshRemotePanel, 4000);
+        }
+      } else {
+        idleEl?.classList.remove('hidden');
+        pendingEl?.classList.add('hidden');
+        stopPairingPolling();
+      }
+    }
+  } catch (error) {
+    console.error('Could not load remote access status:', error);
+  }
+}
+
+document.getElementById('generatePairingCodeBtn')?.addEventListener('click', async () => {
+  try {
+    const data = await apiRequest('/api/pairing/create', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id }),
+    });
+    document.getElementById('pairingCodeDisplay').textContent = data.code;
+    document.getElementById('remoteIdle')?.classList.add('hidden');
+    document.getElementById('remotePendingCode')?.classList.remove('hidden');
+    renderPairingCountdown(data.expires_at);
+    pairingPollTimer = setInterval(refreshRemotePanel, 4000);
+  } catch (error) {
+    showToast(error.message || 'Could not generate a pairing code', 'error');
+  }
+});
+
+document.getElementById('cancelPairingBtn')?.addEventListener('click', async () => {
+  stopPairingPolling();
+  try {
+    await apiRequest('/api/pairing/unpair', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id }),
+    });
+  } catch (error) {
+    console.error('Could not cancel pairing code:', error);
+  }
+  refreshRemotePanel();
+});
+
+document.getElementById('unpairBtn')?.addEventListener('click', async () => {
+  const confirmed = await requestPasswordConfirmation();
+  if (!confirmed) return;
+  if (!confirm('Revoke remote access? The paired phone will lose its connection to this desktop.')) return;
+
+  try {
+    await apiRequest('/api/pairing/unpair', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: state.currentUser.id }),
+    });
+    showToast('Remote access revoked.');
+    refreshRemotePanel();
+  } catch (error) {
+    showToast(error.message || 'Could not revoke remote access', 'error');
+  }
+});
 
 function setFileFilter(filter) {
   state.fileFilter = filter;

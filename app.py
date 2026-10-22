@@ -599,6 +599,228 @@ def lookup_user_by_code(access_token: str, code: str) -> Optional[dict]:
     return None
 
 
+def is_monitored_path(user_id: str, file_path: str) -> bool:
+    """A file this desktop is actively watching can't also be sent out
+    through the transfer system - it stays under the integrity baseline,
+    not loose in a transfer. Comparing resolved absolute paths so a
+    different-looking but equivalent path (e.g. relative vs. absolute)
+    can't slip past this check."""
+    try:
+        resolved = str(Path(file_path).expanduser().resolve())
+    except Exception:
+        resolved = file_path
+
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT path FROM files WHERE user_id = ?", (user_id,))
+    monitored_paths = {row["path"] for row in cursor.fetchall()}
+    conn.close()
+
+    if resolved in monitored_paths or file_path in monitored_paths:
+        return True
+    for monitored in monitored_paths:
+        try:
+            if str(Path(monitored).expanduser().resolve()) == resolved:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+# ===== Remote Pairing & Remote Control (Android) =====
+# A phone is never able to remote-control a desktop on password alone.
+# It needs three things: the account email, the account password (an
+# ordinary Supabase login, same as the desktop uses), AND a one-time
+# code that only ever appears on the desktop's own screen. That third
+# factor means someone would need the password AND physical access to
+# the desktop at that moment - a leaked password by itself goes nowhere.
+#
+# Once paired, the phone gets a live, read-only mirror of this desktop's
+# files/alerts/cases (pushed to the remote_snapshot table below) and can
+# submit a "review" request (read-only file inspection, same as the
+# desktop's own Review button). It can never Resolve or Reverse a file,
+# and it can never add a new file for this desktop to monitor - there is
+# deliberately no remote action type for either of those.
+
+def generate_pairing_code() -> str:
+    import secrets
+    return f"{secrets.randbelow(1000000):06d}"
+
+
+def create_pairing(user_id: str, access_token: str, hostname: str) -> tuple[bool, Any]:
+    code = generate_pairing_code()
+    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat() + "Z"
+    ok, body = postgrest_request(
+        "POST", "device_pairings", access_token,
+        json={
+            "user_id": user_id,
+            "pairing_code": code,
+            "desktop_hostname": hostname,
+            "status": "pending",
+            "expires_at": expires_at,
+        },
+    )
+    if not ok:
+        return False, body
+    return True, {"code": code, "expires_at": expires_at}
+
+
+def get_latest_pairing(user_id: str, access_token: str) -> Optional[dict]:
+    ok, rows = postgrest_request(
+        "GET", "device_pairings", access_token,
+        params={
+            "user_id": f"eq.{user_id}",
+            "select": "id,pairing_code,desktop_hostname,status,phone_label,created_at,expires_at",
+            "order": "created_at.desc",
+            "limit": "1",
+        },
+    )
+    if ok and rows:
+        return rows[0]
+    return None
+
+
+def unpair_device(user_id: str, access_token: str) -> bool:
+    ok, _ = postgrest_request(
+        "PATCH", "device_pairings", access_token,
+        params={"user_id": f"eq.{user_id}", "status": "eq.paired"},
+        json={"status": "revoked"},
+    )
+    return ok
+
+
+def gather_remote_snapshot(user_id: str) -> dict:
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, name, status, last_checked, locked FROM files WHERE user_id = ? ORDER BY id DESC",
+        (user_id,),
+    )
+    files = [dict(row) for row in cursor.fetchall()]
+    cursor.execute(
+        "SELECT id, file_id, file_name, timestamp, resolved FROM alerts WHERE user_id = ? ORDER BY id DESC LIMIT 50",
+        (user_id,),
+    )
+    alerts = [dict(row) for row in cursor.fetchall()]
+    cursor.execute(
+        "SELECT id, file_id, file_name, action_type, timestamp FROM case_log WHERE user_id = ? ORDER BY id DESC LIMIT 50",
+        (user_id,),
+    )
+    cases = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return {"files": files, "alerts": alerts, "cases": cases}
+
+
+def push_remote_snapshot(user_id: str, access_token: str) -> None:
+    """Uploads a fresh read-only mirror of this desktop's dashboard so a
+    paired phone has something current to show, without the phone ever
+    talking to this desktop directly (it may not even be on the same
+    network)."""
+    import json as json_lib
+    snapshot = gather_remote_snapshot(user_id)
+    postgrest_request(
+        "POST", "remote_snapshot", access_token,
+        params={"on_conflict": "user_id"},
+        prefer="resolution=merge-duplicates",
+        json={
+            "user_id": user_id,
+            "files_json": json_lib.dumps(snapshot["files"]),
+            "alerts_json": json_lib.dumps(snapshot["alerts"]),
+            "cases_json": json_lib.dumps(snapshot["cases"]),
+            "updated_at": now_iso(),
+        },
+    )
+
+
+def perform_remote_review(user_id: str, file_id) -> dict:
+    """The exact same read-only inspection as the desktop's own Review
+    button, reused here so a paired phone gets an identical result -
+    metadata and a text preview, never a way to change the file."""
+    if not file_id:
+        return {"ok": False, "message": "No file specified."}
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM files WHERE id = ? AND user_id = ?", (file_id, user_id))
+    file_row = cursor.fetchone()
+    conn.close()
+    if not file_row:
+        return {"ok": False, "message": "File not found."}
+    if file_row["locked"]:
+        return {"ok": False, "message": "This file is locked. Unlock it from the desktop first."}
+
+    path = Path(file_row["path"])
+    try:
+        stat_result = path.stat()
+        raw = path.read_bytes()
+        try:
+            preview = raw[:5000].decode("utf-8")
+        except UnicodeDecodeError:
+            preview = None
+    except OSError as exc:
+        return {"ok": False, "message": f"Could not read the file: {exc}"}
+
+    log_case(user_id, file_id, file_row["name"], "reviewed (remote)")
+    return {
+        "ok": True,
+        "name": file_row["name"],
+        "status": file_row["status"],
+        "size": stat_result.st_size,
+        "modified_at": datetime.fromtimestamp(stat_result.st_mtime).isoformat(timespec="seconds"),
+        "preview": preview,
+        "is_binary": preview is None,
+    }
+
+
+def apply_remote_actions(user_id: str, access_token: str) -> None:
+    import json as json_lib
+    ok, rows = postgrest_request(
+        "GET", "remote_actions", access_token,
+        params={"user_id": f"eq.{user_id}", "status": "eq.pending", "select": "id,action_type,payload_json"},
+    )
+    if not ok or not rows:
+        return
+
+    for action in rows:
+        try:
+            payload = json_lib.loads(action.get("payload_json") or "{}")
+        except (ValueError, TypeError):
+            payload = {}
+
+        if action["action_type"] == "review":
+            result = perform_remote_review(user_id, payload.get("file_id"))
+        else:
+            # No other action type exists on purpose - Resolve, Reverse,
+            # and adding a new monitored file all stay desktop-only.
+            result = {"ok": False, "message": "This action is not available remotely."}
+
+        postgrest_request(
+            "PATCH", "remote_actions", access_token,
+            params={"id": f"eq.{action['id']}"},
+            json={"status": "done", "result_json": json_lib.dumps(result)},
+        )
+
+
+def sync_remote_paired_users() -> None:
+    """Runs periodically from the monitoring loop. For every account
+    that's logged in on this desktop AND currently paired with a phone,
+    push a fresh snapshot and carry out anything the phone asked for."""
+    conn = Database.get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT user_id FROM cloud_tokens WHERE provider = 'supabase'")
+    user_ids = [row["user_id"] for row in cursor.fetchall()]
+    conn.close()
+
+    for user_id in user_ids:
+        access_token = get_valid_supabase_token(user_id)
+        if not access_token:
+            continue
+        pairing = get_latest_pairing(user_id, access_token)
+        if not pairing or pairing.get("status") != "paired":
+            continue
+        push_remote_snapshot(user_id, access_token)
+        apply_remote_actions(user_id, access_token)
+
+
 # ===== Local Network (short-range) transfer =====
 # No internet, no Supabase, zero mobile/WiFi data usage - a direct
 # connection between two devices on the same network. Instead of
@@ -1797,6 +2019,9 @@ def transfer_send():
     if not user_id or not file_path or not receiver_code:
         return jsonify({"success": False, "message": "user_id, file_path, and receiver_code are required."}), 400
 
+    if is_monitored_path(user_id, file_path):
+        return jsonify({"success": False, "message": "This file is currently being monitored, so it can't be sent. Stop monitoring it first if you want to transfer it."}), 400
+
     access_token = get_valid_supabase_token(user_id)
     if not access_token:
         return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
@@ -2131,6 +2356,9 @@ def lan_send():
     if not all([user_id, file_path, receiver_ip, receiver_port, pin]):
         return jsonify({"success": False, "message": "file_path, receiver_ip, receiver_port, and pin are all required."}), 400
 
+    if is_monitored_path(user_id, file_path):
+        return jsonify({"success": False, "message": "This file is currently being monitored, so it can't be sent. Stop monitoring it first if you want to transfer it."}), 400
+
     path = Path(file_path)
     try:
         original_bytes = path.read_bytes()
@@ -2178,6 +2406,71 @@ def lan_send():
 
     log_case(user_id, None, file_name, "sent")
     return jsonify({"success": True, "message": f"{file_name} sent directly over the local network."})
+
+
+@app.route('/api/pairing/create', methods=['POST'])
+def pairing_create():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    ok, result = create_pairing(user_id, access_token, socket.gethostname())
+    if not ok:
+        return jsonify({"success": False, "message": f"Could not create a pairing code: {result}"}), 400
+
+    return jsonify({"success": True, "code": result["code"], "expires_at": result["expires_at"]})
+
+
+@app.route('/api/pairing/status', methods=['GET'])
+def pairing_status():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    pairing = get_latest_pairing(user_id, access_token)
+    if not pairing:
+        return jsonify({"success": True, "paired": False, "pending": False})
+
+    status = pairing.get("status")
+    expired = False
+    try:
+        expires_raw = (pairing.get("expires_at") or "").replace("Z", "")
+        expired = bool(expires_raw) and datetime.fromisoformat(expires_raw) < datetime.utcnow()
+    except (ValueError, TypeError):
+        pass
+
+    return jsonify({
+        "success": True,
+        "paired": status == "paired",
+        "pending": status == "pending" and not expired,
+        "phone_label": pairing.get("phone_label"),
+        "expires_at": pairing.get("expires_at"),
+    })
+
+
+@app.route('/api/pairing/unpair', methods=['POST'])
+def pairing_unpair():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+
+    unpair_device(user_id, access_token)
+    log_case(user_id, None, "Paired phone", "unpaired")
+    return jsonify({"success": True, "message": "Remote access revoked. The phone will be signed out of remote control."})
 
 
 def _run_icacls(args: list) -> tuple[bool, str]:
@@ -2717,10 +3010,11 @@ def simulate_change(file_id):
 
 monitor_lock = threading.Lock()
 monitor_running = False
+remote_sync_counter = 0
 
 
 def monitor_files():
-    global monitor_running
+    global monitor_running, remote_sync_counter
     while True:
         with monitor_lock:
             if not monitor_running:
@@ -2813,6 +3107,19 @@ def monitor_files():
             conn.close()
         except Exception as e:
             print(f"Monitor error: {e}")
+
+        # Push a fresh snapshot to any paired phone roughly every 30
+        # seconds (every 10th tick of this 3-second loop) rather than on
+        # every single tick - a paired phone doesn't need sub-3-second
+        # freshness, and this keeps network use light.
+        remote_sync_counter += 1
+        if remote_sync_counter >= 10:
+            remote_sync_counter = 0
+            try:
+                sync_remote_paired_users()
+            except Exception as e:
+                print(f"Remote sync error: {e}")
+
         time.sleep(3)
 
 
