@@ -996,7 +996,7 @@ function renderCasesList(filter) {
   const tbody = document.getElementById('caseTableBody');
   const searchTerm = (document.getElementById('caseSearchInput')?.value || '').trim().toLowerCase();
 
-  let rows = filter === 'all' ? cachedCases : cachedCases.filter((c) => c.action_type === filter);
+  let rows = filter === 'all' ? cachedCases : cachedCases.filter((c) => c.action_type === filter || c.action_type.startsWith(filter + ' '));
   if (searchTerm) {
     rows = rows.filter((c) => c.file_name.toLowerCase().includes(searchTerm));
   }
@@ -1006,7 +1006,7 @@ function renderCasesList(filter) {
     return;
   }
 
-  const actionLabel = { reviewed: '🔎 Reviewed', resolved: '✅ Resolved', reversed: '↩ Reversed', sent: '📤 Sent', received: '📥 Received', rejected: '🚫 Rejected' };
+  const actionLabel = { reviewed: '🔎 Reviewed', resolved: '✅ Resolved', reversed: '↩ Reversed', sent: '📤 Sent', received: '📥 Received', rejected: '🚫 Rejected', unpaired: '🔌 Phone unpaired', 'reviewed (remote)': '📱 Reviewed from phone' };
   tbody.innerHTML = rows.map((c) => `
     <tr>
       <td>${c.file_name}</td>
