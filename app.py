@@ -785,28 +785,6 @@ def run_windows_hello(request_verification: bool) -> str:
     return out[-1].strip()
 
 
-@app.route('/api/hello/available', methods=['GET'])
-def hello_available():
-    answer = run_windows_hello(False)
-    return jsonify({"success": True, "available": answer == "Available", "detail": answer})
-
-
-@app.route('/api/hello/verify', methods=['POST'])
-def hello_verify():
-    answer = run_windows_hello(True)
-    if answer == "Verified":
-        return jsonify({"success": True, "verified": True})
-    friendly = {
-        "Canceled": "Windows Hello was cancelled.",
-        "RetriesExhausted": "Too many failed attempts. Please try again.",
-        "DeviceNotPresent": "No Windows Hello device was found.",
-        "NotConfiguredForUser": "Windows Hello is not set up on this PC.",
-        "DisabledByPolicy": "Windows Hello is turned off by this PC's settings.",
-        "DeviceBusy": "Windows Hello is busy. Please try again.",
-    }.get(answer, answer)
-    return jsonify({"success": False, "verified": False, "message": friendly}), 401
-
-
 def push_remote_snapshot(user_id: str, access_token: str) -> None:
     """Uploads a fresh read-only mirror of this desktop's dashboard so a
     paired phone has something current to show, without the phone ever
@@ -2521,6 +2499,28 @@ def pairing_create():
         return jsonify({"success": False, "message": f"Could not create a pairing code: {result}"}), 400
 
     return jsonify({"success": True, "code": result["code"], "expires_at": result["expires_at"]})
+
+
+@app.route('/api/hello/available', methods=['GET'])
+def hello_available():
+    answer = run_windows_hello(False)
+    return jsonify({"success": True, "available": answer == "Available", "detail": answer})
+
+
+@app.route('/api/hello/verify', methods=['POST'])
+def hello_verify():
+    answer = run_windows_hello(True)
+    if answer == "Verified":
+        return jsonify({"success": True, "verified": True})
+    friendly = {
+        "Canceled": "Windows Hello was cancelled.",
+        "RetriesExhausted": "Too many failed attempts. Please try again.",
+        "DeviceNotPresent": "No Windows Hello device was found.",
+        "NotConfiguredForUser": "Windows Hello is not set up on this PC.",
+        "DisabledByPolicy": "Windows Hello is turned off by this PC's settings.",
+        "DeviceBusy": "Windows Hello is busy. Please try again.",
+    }.get(answer, answer)
+    return jsonify({"success": False, "verified": False, "message": friendly}), 401
 
 
 @app.route('/api/pairing/status', methods=['GET'])
