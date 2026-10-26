@@ -94,6 +94,56 @@ function loadState() {
   }
 }
 
+// ===== FIMS brand screen =====
+function playBrandSplash(duration = 2700) {
+  return new Promise((resolve) => {
+    const el = document.getElementById('brandSplash');
+    if (!el) { resolve(); return; }
+    el.classList.remove('hidden', 'play');
+    void el.offsetWidth; // restart the CSS animation
+    el.classList.add('play');
+    setTimeout(() => {
+      el.classList.add('hidden');
+      el.classList.remove('play');
+      resolve();
+    }, duration);
+  });
+}
+
+// ===== Show / Hide password buttons =====
+function addPasswordToggles() {
+  document.querySelectorAll('input[type="password"]').forEach((input) => {
+    if (input.dataset.hasToggle) return;
+    input.dataset.hasToggle = '1';
+    const wrap = document.createElement('div');
+    wrap.className = 'password-wrap';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'pw-toggle';
+    btn.textContent = 'Show';
+    btn.addEventListener('click', () => {
+      const showing = input.type === 'text';
+      input.type = showing ? 'password' : 'text';
+      btn.textContent = showing ? 'Show' : 'Hide';
+    });
+    wrap.appendChild(btn);
+  });
+}
+addPasswordToggles();
+
+// ===== Shimmer placeholders while the dashboard loads =====
+function showDashboardSkeleton() {
+  const rows = '<div class="skeleton-line long"></div><div class="skeleton-line"></div><div class="skeleton-line short"></div>';
+  if (fileTableBody && !state.files.length) {
+    fileTableBody.innerHTML = `<tr><td colspan="5">${rows}</td></tr>`;
+  }
+  if (alertList && !state.alerts.length) {
+    alertList.innerHTML = `<li class="empty-state">${rows}</li>`;
+  }
+}
+
 function showHome() {
   homePanel.classList.remove('hidden');
   authPanel.classList.add('hidden');
@@ -107,6 +157,7 @@ function showDashboard() {
   authPanel.classList.add('hidden');
   dashboardPanel.classList.remove('hidden');
   greetingText.textContent = `Welcome back, ${state.currentUser?.name || 'User'}`;
+  showDashboardSkeleton();
   loadDashboardData();
   refreshCloudPanel();
   startPolling();
@@ -480,6 +531,52 @@ function renderPairingCountdown(expiresAt) {
   }, 1000);
 }
 
+// ----- Live phone link status -----
+let remoteLastSyncMs = null;
+let remoteLiveTimer = null;
+let remoteLiveTick = 0;
+
+function agoText(seconds) {
+  if (seconds < 5) return 'just now';
+  if (seconds < 60) return `${seconds}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  return `${Math.floor(seconds / 3600)}h ago`;
+}
+
+function renderRemoteLive() {
+  const dot = document.getElementById('remoteLiveDot');
+  const text = document.getElementById('remoteLiveText');
+  if (!dot || !text) return;
+  if (remoteLastSyncMs === null) {
+    dot.classList.remove('online');
+    text.textContent = 'Waiting for the first sync to your phone...';
+    return;
+  }
+  const seconds = Math.max(0, Math.round((Date.now() - remoteLastSyncMs) / 1000));
+  // This desktop syncs about every 30 seconds, so under 2 minutes means the link is alive.
+  const online = seconds < 120;
+  dot.classList.toggle('online', online);
+  text.textContent = online
+    ? `Phone link online. Last synced ${agoText(seconds)}.`
+    : `Phone link quiet. Last synced ${agoText(seconds)}.`;
+}
+
+function startRemoteLiveTimer() {
+  renderRemoteLive();
+  if (remoteLiveTimer) return;
+  remoteLiveTick = 0;
+  remoteLiveTimer = setInterval(() => {
+    renderRemoteLive();
+    remoteLiveTick += 1;
+    if (remoteLiveTick % 15 === 0) refreshRemotePanel(); // re-read the real sync time now and then
+  }, 1000);
+}
+
+function stopRemoteLiveTimer() {
+  if (remoteLiveTimer) clearInterval(remoteLiveTimer);
+  remoteLiveTimer = null;
+}
+
 async function refreshRemotePanel() {
   if (!state.currentUser?.id) return;
 
@@ -496,7 +593,12 @@ async function refreshRemotePanel() {
       const labelEl = document.getElementById('pairedPhoneLabel');
       if (labelEl) labelEl.textContent = data.phone_label ? `(${data.phone_label})` : '';
       stopPairingPolling();
+      remoteLastSyncMs = (typeof data.last_sync_seconds_ago === 'number')
+        ? Date.now() - data.last_sync_seconds_ago * 1000
+        : null;
+      startRemoteLiveTimer();
     } else {
+      stopRemoteLiveTimer();
       pairedEl?.classList.add('hidden');
       notPairedEl?.classList.remove('hidden');
 
@@ -1552,8 +1654,10 @@ loginForm.addEventListener('submit', async (event) => {
     state.currentUser = response.user;
     saveState();
     await startMonitoringBackend();
+    await playBrandSplash();
     showDashboard();
     showToast('Login successful! Welcome back.');
+    offerWindowsHello();
   } catch (error) {
     console.error('Login error:', error);
     showToast(error.message || 'Login failed. Please check your details and try again.', 'error');
@@ -1579,6 +1683,10 @@ registerForm.addEventListener('submit', async (event) => {
     showToast('Your password needs to be at least 6 characters long.', 'error');
     return;
   }
+  if (password !== document.getElementById('registerPasswordConfirm').value) {
+    showToast("The two passwords don't match. Tap Show to check them.", 'error');
+    return;
+  }
 
   try {
     const response = await apiRequest('/api/register', {
@@ -1598,8 +1706,10 @@ registerForm.addEventListener('submit', async (event) => {
     state.currentUser = response.user;
     saveState();
     await startMonitoringBackend();
+    await playBrandSplash();
     showDashboard();
     showToast('Registration successful! Welcome in.');
+    offerWindowsHello();
   } catch (error) {
     console.error('Registration error:', error);
     showToast(error.message || 'Registration failed', 'error');
@@ -1633,8 +1743,10 @@ verifyForm.addEventListener('submit', async (event) => {
     state.currentUser = response.user;
     saveState();
     await startMonitoringBackend();
+    await playBrandSplash();
     showDashboard();
     showToast('Email verified! Welcome in.');
+    offerWindowsHello();
     verifyForm.reset();
   } catch (error) {
     console.error('Verification error:', error);
@@ -1667,6 +1779,10 @@ resetPasswordForm.addEventListener('submit', async (event) => {
   const email = document.getElementById('resetEmail').value.trim();
   const token = document.getElementById('resetCode').value.trim();
   const newPassword = document.getElementById('resetNewPassword').value;
+  if (newPassword !== document.getElementById('resetNewPasswordConfirm').value) {
+    showToast("The two passwords don't match. Tap Show to check them.", 'error');
+    return;
+  }
 
   try {
     const response = await apiRequest('/api/reset-password', {
@@ -1736,14 +1852,16 @@ if (browseBtn) {
 
 // Home page navigation
 if (homeLoginBtn) {
-  homeLoginBtn.addEventListener('click', () => {
+  homeLoginBtn.addEventListener('click', async () => {
+    await playBrandSplash();
     toggleAuthForm('login');
     showAuth();
   });
 }
 
 if (homeRegisterBtn) {
-  homeRegisterBtn.addEventListener('click', () => {
+  homeRegisterBtn.addEventListener('click', async () => {
+    await playBrandSplash();
     toggleAuthForm('register');
     showAuth();
   });
@@ -1788,15 +1906,118 @@ if (simulateBtn) {
   });
 }
 
+// ===== Windows Hello (fingerprint, face or PIN) =====
+const HELLO_KEY = 'integrity-hello';
+
+async function helloIsAvailable() {
+  try {
+    const data = await apiRequest('/api/hello/available');
+    return !!data.available;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function helloVerify() {
+  try {
+    await apiRequest('/api/hello/verify', { method: 'POST', body: JSON.stringify({}) });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, message: e.message || 'Windows Hello did not confirm it was you.' };
+  }
+}
+
+function showHelloGate() {
+  homePanel.classList.add('hidden');
+  authPanel.classList.add('hidden');
+  dashboardPanel.classList.add('hidden');
+  document.getElementById('helloGate').classList.remove('hidden');
+  tryHelloUnlock();
+}
+
+async function tryHelloUnlock() {
+  const message = document.getElementById('helloGateMessage');
+  message.textContent = 'Waiting for Windows Hello...';
+  const result = await helloVerify();
+  if (result.ok) {
+    document.getElementById('helloGate').classList.add('hidden');
+    await playBrandSplash();
+    showDashboard();
+    startMonitoringBackend();
+  } else {
+    message.textContent = `${result.message} You can try again or use your password.`;
+  }
+}
+
+document.getElementById('helloUnlockBtn')?.addEventListener('click', tryHelloUnlock);
+document.getElementById('helloUsePasswordBtn')?.addEventListener('click', () => {
+  document.getElementById('helloGate').classList.add('hidden');
+  state.currentUser = null;
+  saveState();
+  localStorage.removeItem(HELLO_KEY);
+  showHome();
+  showToast('Logged out. Log in with your password.');
+});
+
+// Offered once after a fresh login, only if this PC has Windows Hello ready.
+async function offerWindowsHello() {
+  if (localStorage.getItem(HELLO_KEY) === '1' || localStorage.getItem('integrity-hello-declined') === '1') return;
+  if (!(await helloIsAvailable())) return;
+  if (window.confirm('Use Windows Hello (fingerprint, face or PIN) to unlock Integrity Monitor next time?')) {
+    const result = await helloVerify();
+    if (result.ok) {
+      localStorage.setItem(HELLO_KEY, '1');
+      showToast('Windows Hello is on.');
+      initHelloSettings();
+    } else {
+      showToast(result.message, 'error');
+    }
+  } else {
+    localStorage.setItem('integrity-hello-declined', '1');
+  }
+}
+
+async function initHelloSettings() {
+  const toggle = document.getElementById('helloToggle');
+  const status = document.getElementById('helloStatusText');
+  if (!toggle || !status) return;
+  const available = await helloIsAvailable();
+  toggle.disabled = !available;
+  toggle.checked = available && localStorage.getItem(HELLO_KEY) === '1';
+  status.textContent = available
+    ? ''
+    : 'Windows Hello is not set up on this PC. Set it up in Windows Settings > Accounts > Sign-in options.';
+}
+
+document.getElementById('helloToggle')?.addEventListener('change', async (event) => {
+  const toggle = event.target;
+  if (toggle.checked) {
+    const result = await helloVerify();
+    if (result.ok) {
+      localStorage.setItem(HELLO_KEY, '1');
+      showToast('Windows Hello is on.');
+    } else {
+      toggle.checked = false;
+      showToast(result.message, 'error');
+    }
+  } else {
+    localStorage.removeItem(HELLO_KEY);
+    showToast('Windows Hello is off.');
+  }
+});
+
 // ===== Initialization =====
 
 // Check if user is already logged in
 loadState();
-if (state.currentUser) {
+if (state.currentUser && localStorage.getItem('integrity-hello') === '1') {
+  showHelloGate();
+} else if (state.currentUser) {
   showDashboard();
 } else {
   showHome();
 }
+initHelloSettings();
 
 console.log('🔐 File Integrity Monitor initialized');
 console.log('📊 Dashboard will auto-refresh every 3 seconds');

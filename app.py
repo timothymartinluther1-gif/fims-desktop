@@ -711,6 +711,102 @@ def gather_remote_snapshot(user_id: str) -> dict:
     return {"files": files, "alerts": alerts, "cases": cases}
 
 
+# When this desktop last pushed a snapshot to each paired phone (epoch
+# seconds), so the Remote Access screen can show a live "phone link" status.
+remote_last_sync: dict = {}
+
+
+def notify_windows(title: str, message: str) -> None:
+    """Shows a real Windows notification (the pop-up in the corner), even
+    when the app window is hidden or minimized. Best effort: if anything
+    about it fails, monitoring carries on untouched."""
+    if sys.platform != "win32":
+        return
+    try:
+        import base64
+        from xml.sax.saxutils import escape
+        script = (
+            "$ErrorActionPreference = 'SilentlyContinue'\n"
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null\n"
+            "[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null\n"
+            "$xml = New-Object Windows.Data.Xml.Dom.XmlDocument\n"
+            f"$xml.LoadXml('<toast><visual><binding template=\"ToastGeneric\"><text>{escape(title).replace(chr(39), chr(39) * 2)}</text><text>{escape(message).replace(chr(39), chr(39) * 2)}</text></binding></visual></toast>')\n"
+            "$toast = [Windows.UI.Notifications.ToastNotification]::new($xml)\n"
+            "$appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'\n"
+            "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show($toast)\n"
+        )
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            creationflags=0x08000000,  # CREATE_NO_WINDOW
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        print(f"[notify] could not show a Windows notification: {exc!r}", flush=True)
+
+
+_HELLO_PRELUDE = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, $type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); $t.Wait(-1) | Out-Null; $t.Result }
+[void][Windows.Security.Credentials.UI.UserConsentVerifier, Windows.Security.Credentials.UI, ContentType = WindowsRuntime]
+"""
+
+
+def run_windows_hello(request_verification: bool) -> str:
+    """Asks Windows whether Windows Hello is set up (False), or shows the
+    Windows Hello prompt (True). Returns Windows' own one-word answer,
+    for example 'Available' or 'Verified', or 'Error: ...'."""
+    if sys.platform != "win32":
+        return "Error: Windows Hello is only available on Windows."
+    import base64
+    if request_verification:
+        body = (
+            "$r = Await ([Windows.Security.Credentials.UI.UserConsentVerifier]::RequestVerificationAsync('Unlock Integrity Monitor')) "
+            "([Windows.Security.Credentials.UI.UserConsentVerificationResult])\nWrite-Output $r\n"
+        )
+    else:
+        body = (
+            "$r = Await ([Windows.Security.Credentials.UI.UserConsentVerifier]::CheckAvailabilityAsync()) "
+            "([Windows.Security.Credentials.UI.UserConsentVerifierAvailability])\nWrite-Output $r\n"
+        )
+    encoded = base64.b64encode((_HELLO_PRELUDE + body).encode("utf-16-le")).decode("ascii")
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+            capture_output=True, text=True, timeout=90, creationflags=0x08000000,
+        )
+    except Exception as exc:
+        return f"Error: {exc}"
+    out = (completed.stdout or "").strip().splitlines()
+    if completed.returncode != 0 or not out:
+        return "Error: " + ((completed.stderr or "").strip()[:200] or "no answer from Windows")
+    return out[-1].strip()
+
+
+@app.route('/api/hello/available', methods=['GET'])
+def hello_available():
+    answer = run_windows_hello(False)
+    return jsonify({"success": True, "available": answer == "Available", "detail": answer})
+
+
+@app.route('/api/hello/verify', methods=['POST'])
+def hello_verify():
+    answer = run_windows_hello(True)
+    if answer == "Verified":
+        return jsonify({"success": True, "verified": True})
+    friendly = {
+        "Canceled": "Windows Hello was cancelled.",
+        "RetriesExhausted": "Too many failed attempts. Please try again.",
+        "DeviceNotPresent": "No Windows Hello device was found.",
+        "NotConfiguredForUser": "Windows Hello is not set up on this PC.",
+        "DisabledByPolicy": "Windows Hello is turned off by this PC's settings.",
+        "DeviceBusy": "Windows Hello is busy. Please try again.",
+    }.get(answer, answer)
+    return jsonify({"success": False, "verified": False, "message": friendly}), 401
+
+
 def push_remote_snapshot(user_id: str, access_token: str) -> None:
     """Uploads a fresh read-only mirror of this desktop's dashboard so a
     paired phone has something current to show, without the phone ever
@@ -818,6 +914,7 @@ def sync_remote_paired_users() -> None:
         if not pairing or pairing.get("status") != "paired":
             continue
         push_remote_snapshot(user_id, access_token)
+        remote_last_sync[user_id] = time.time()
         apply_remote_actions(user_id, access_token)
 
 
@@ -2454,6 +2551,9 @@ def pairing_status():
         "pending": status == "pending" and not expired,
         "phone_label": pairing.get("phone_label"),
         "expires_at": pairing.get("expires_at"),
+        "last_sync_seconds_ago": (
+            round(time.time() - remote_last_sync[user_id]) if user_id in remote_last_sync else None
+        ),
     })
 
 
@@ -3024,6 +3124,7 @@ def monitor_files():
             cursor = conn.cursor()
             cursor.execute("SELECT id, user_id, name, path, trusted_hash, current_hash, status, locked FROM files")
             files = cursor.fetchall()
+            newly_tampered = []
 
             for file in files:
                 if file["locked"]:
@@ -3047,6 +3148,7 @@ def monitor_files():
                             (file["user_id"], file["id"], file["name"], file["trusted_hash"], "FILE_MISSING", now_iso(), 0,
                              session["os_username"], session["hostname"], session["session_type"], session["remote_ip"]),
                         )
+                        newly_tampered.append(file["name"])
                         # Add to history
                         cursor.execute(
                             "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
@@ -3071,6 +3173,7 @@ def monitor_files():
                         (file["user_id"], file["id"], file["name"], file["trusted_hash"], current_hash, now_iso(), 0,
                          session["os_username"], session["hostname"], session["session_type"], session["remote_ip"]),
                     )
+                    newly_tampered.append(file["name"])
                     # Add new hash to history
                     cursor.execute(
                         "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
@@ -3105,6 +3208,11 @@ def monitor_files():
 
             conn.commit()
             conn.close()
+            if newly_tampered:
+                if len(newly_tampered) == 1:
+                    notify_windows("Tamper detected", f'"{newly_tampered[0]}" was changed or went missing.')
+                else:
+                    notify_windows("Tamper detected", f"{len(newly_tampered)} protected files were changed or went missing.")
         except Exception as e:
             print(f"Monitor error: {e}")
 

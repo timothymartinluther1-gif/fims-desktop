@@ -62,6 +62,29 @@
     </div>
   </section>
 
+  <!-- ===== FIMS BRAND SCREEN ===== -->
+  <div id="brandSplash" class="brand-splash hidden" aria-hidden="true">
+    <div class="splash-glow"></div>
+    <div class="splash-content">
+      <div class="splash-letters">
+        <span class="splash-letter">F</span><span class="splash-letter">I</span><span class="splash-letter">M</span><span class="splash-letter">S</span>
+      </div>
+      <div class="splash-line"></div>
+      <div class="splash-tagline">INTEGRITY MONITOR</div>
+    </div>
+  </div>
+
+  <!-- ===== WINDOWS HELLO LOCK ===== -->
+  <div id="helloGate" class="hello-gate hidden">
+    <div class="hello-card">
+      <div class="hello-icon">🔒</div>
+      <h3>Unlock Integrity Monitor</h3>
+      <p class="field-hint" id="helloGateMessage">Use Windows Hello (fingerprint, face or PIN) to continue.</p>
+      <button id="helloUnlockBtn" class="submit-btn">Unlock with Windows Hello</button>
+      <button id="helloUsePasswordBtn" class="link-btn">Use password instead</button>
+    </div>
+  </div>
+
   <!-- ===== AUTH PANEL ===== -->
   <section id="authPanel" class="auth-panel hidden">
     <div class="auth-card">
@@ -105,6 +128,10 @@
           <label for="registerPassword">Password</label>
           <input type="password" id="registerPassword" required minlength="6" autocomplete="new-password" />
         </div>
+        <div class="field-group">
+          <label for="registerPasswordConfirm">Confirm password</label>
+          <input type="password" id="registerPasswordConfirm" required minlength="6" autocomplete="new-password" />
+        </div>
         <button type="submit" class="submit-btn">Create Account</button>
       </form>
 
@@ -139,6 +166,10 @@
         <div class="field-group">
           <label for="resetNewPassword">New password</label>
           <input type="password" id="resetNewPassword" required minlength="6" autocomplete="new-password" />
+        </div>
+        <div class="field-group">
+          <label for="resetNewPasswordConfirm">Confirm new password</label>
+          <input type="password" id="resetNewPasswordConfirm" required minlength="6" autocomplete="new-password" />
         </div>
         <button type="submit" class="submit-btn">Reset Password</button>
         <button type="button" id="backToLoginFromResetBtn" class="link-btn">Back to log in</button>
@@ -379,6 +410,7 @@
                   <input type="text" id="receiverPortInput" placeholder="Port" style="max-width: 100px;" />
                   <input type="text" id="receiverPinInput" placeholder="6-digit PIN" style="max-width: 140px;" />
                 </div>
+                <p class="field-hint" style="margin-top: 8px;">Sending: switch on your WiFi and join the receiver's hotspot (or the same WiFi network), then enter the details shown on their screen.</p>
               </div>
               <div class="path-row" style="margin: 12px 0;">
                 <input type="text" id="transferFilePathInput" placeholder="Choose a file..." readonly />
@@ -393,7 +425,7 @@
 
           <div class="panel">
             <div class="table-header"><h4>Receive over Local Network</h4></div>
-            <p class="field-hint" style="margin-bottom: 12px;">No internet or mobile data needed, just the same WiFi/network as the sender.</p>
+            <p class="field-hint" style="margin-bottom: 12px;">No internet or mobile data needed. Receiving: switch on your hotspot (a phone hotspot or the PC's Mobile Hotspot) or use the same WiFi network as the sender, then tap Start Receiving.</p>
             <div id="lanReceiveIdle">
               <button id="startLanReceivingBtn" class="ghost-btn">Start Receiving</button>
             </div>
@@ -461,6 +493,10 @@
                 <span class="status-pill status-monitoring">● Paired</span>
                 <span id="pairedPhoneLabel" class="field-hint"></span>
               </div>
+              <div class="live-status">
+                <span id="remoteLiveDot" class="live-dot"></span>
+                <span id="remoteLiveText" class="field-hint">Checking the phone link...</span>
+              </div>
               <button id="unpairBtn" class="ghost-btn" style="background: rgba(255, 93, 115, 0.1); color: #ffb2bf;">Revoke Remote Access</button>
             </div>
           </div>
@@ -474,6 +510,14 @@
               <li>🚫 Cannot Resolve or Reverse a tampered file - desktop only</li>
               <li>🚫 Cannot add a new file for this desktop to monitor</li>
             </ul>
+          </div>
+
+          <div class="panel" id="helloPanel">
+            <div class="table-header"><h4>Sign-in security</h4></div>
+            <label class="field-hint" style="display: flex; align-items: center; gap: 8px;">
+              <input type="checkbox" id="helloToggle" /> Ask for Windows Hello (fingerprint, face or PIN) when this app opens
+            </label>
+            <p class="field-hint" id="helloStatusText" style="margin-top: 8px;"></p>
           </div>
         </div>
 

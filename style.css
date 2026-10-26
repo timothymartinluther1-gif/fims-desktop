@@ -1530,3 +1530,86 @@ td code {
     text-align: center;
   }
 }
+
+/* ===== Show/hide password ===== */
+.password-wrap { position: relative; }
+.password-wrap input { padding-right: 64px; width: 100%; box-sizing: border-box; }
+.pw-toggle {
+  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+  background: transparent; border: 0; cursor: pointer;
+  color: var(--accent-2); font-size: 0.8rem; font-weight: 600; padding: 6px 8px;
+}
+.pw-toggle:hover { color: var(--accent-3); }
+
+/* ===== FIMS brand screen ===== */
+.brand-splash {
+  position: fixed; inset: 0; z-index: 5000;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, var(--bg-primary), var(--bg-secondary));
+}
+.brand-splash.hidden { display: none; }
+.splash-glow {
+  position: absolute; width: 420px; height: 420px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(212, 163, 115, 0.35), rgba(212, 163, 115, 0) 70%);
+  opacity: 0;
+}
+.splash-content { position: relative; text-align: center; }
+.splash-letters { display: flex; gap: 12px; justify-content: center; }
+.splash-letter {
+  font-size: 7rem; font-weight: 800; line-height: 1;
+  background: linear-gradient(180deg, var(--accent-1), var(--accent-3));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  opacity: 0; transform: translateY(50px) scale(0.5);
+}
+.splash-line {
+  height: 3px; width: 0; margin: 14px auto 14px; border-radius: 3px;
+  background: var(--accent-1);
+}
+.splash-tagline {
+  letter-spacing: 0.45em; font-size: 0.85rem; font-weight: 600;
+  color: var(--text-secondary); opacity: 0;
+}
+.brand-splash.play .splash-glow { animation: splashGlow 1.4s ease-out forwards; }
+.brand-splash.play .splash-letter { animation: splashPop 0.8s cubic-bezier(0.2, 1.4, 0.4, 1) forwards; }
+.brand-splash.play .splash-letter:nth-child(1) { animation-delay: 0.25s; }
+.brand-splash.play .splash-letter:nth-child(2) { animation-delay: 0.42s; }
+.brand-splash.play .splash-letter:nth-child(3) { animation-delay: 0.59s; }
+.brand-splash.play .splash-letter:nth-child(4) { animation-delay: 0.76s; }
+.brand-splash.play .splash-line { animation: splashLine 0.5s ease-out 1.05s forwards; }
+.brand-splash.play .splash-tagline { animation: splashFade 0.5s ease-out 1.3s forwards; }
+@keyframes splashPop { to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes splashLine { to { width: 160px; } }
+@keyframes splashFade { to { opacity: 1; } }
+@keyframes splashGlow { to { opacity: 1; } }
+
+/* ===== Shimmer loading placeholders ===== */
+.skeleton-line {
+  height: 14px; border-radius: 8px; margin: 8px 0;
+  background: linear-gradient(90deg, var(--border-light) 25%, var(--bg-card) 50%, var(--border-light) 75%);
+  background-size: 300% 100%;
+  animation: shimmer 1.3s linear infinite;
+}
+.skeleton-line.short { width: 40%; }
+.skeleton-line.long { width: 85%; }
+@keyframes shimmer { from { background-position: 150% 0; } to { background-position: -150% 0; } }
+
+/* ===== Live phone link status ===== */
+.live-status { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.live-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--text-muted); }
+.live-dot.online { background: var(--green-soft); animation: livePulse 1.2s ease-in-out infinite; }
+@keyframes livePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+/* ===== Windows Hello lock ===== */
+.hello-gate {
+  position: fixed; inset: 0; z-index: 4500;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-primary);
+}
+.hello-gate.hidden { display: none; }
+.hello-card {
+  background: var(--bg-card); border: 1px solid var(--border-light);
+  border-radius: var(--radius-soft); box-shadow: var(--shadow-medium);
+  padding: 32px; width: min(380px, 90vw); text-align: center;
+}
+.hello-icon { font-size: 3rem; margin-bottom: 8px; }
+.hello-card .submit-btn { width: 100%; margin-top: 16px; }
