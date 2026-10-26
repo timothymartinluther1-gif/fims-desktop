@@ -64,11 +64,40 @@
 
   <!-- ===== FIMS BRAND SCREEN ===== -->
   <div id="brandSplash" class="brand-splash hidden" aria-hidden="true">
+    <div class="splash-flash"></div>
     <div class="splash-glow"></div>
+    <svg class="splash-bolt" viewBox="0 0 100 100" preserveAspectRatio="none">
+      <polyline class="bolt-line bolt-main" pathLength="1" vector-effect="non-scaling-stroke"
+        points="63,-2 51,22 61,27 43,52 54,57 40,74" />
+      <polyline class="bolt-line bolt-branch" pathLength="1" vector-effect="non-scaling-stroke"
+        points="51,22 38,30 44,36" />
+    </svg>
     <div class="splash-content">
-      <div class="splash-letters">
-        <span class="splash-letter">F</span><span class="splash-letter">I</span><span class="splash-letter">M</span><span class="splash-letter">S</span>
-      </div>
+      <svg class="splash-svg" viewBox="0 0 360 130" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="fimsGold" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#ffe9b8" />
+            <stop offset="0.5" stop-color="#e0b384" />
+            <stop offset="1" stop-color="#b88b5e" />
+          </linearGradient>
+        </defs>
+        <g class="fims-glyph g1">
+          <path class="glow" pathLength="1" d="M25,115 L25,15 L80,15 M25,63 L67,63" />
+          <path class="core" pathLength="1" d="M25,115 L25,15 L80,15 M25,63 L67,63" />
+        </g>
+        <g class="fims-glyph g2">
+          <path class="glow" pathLength="1" d="M115,15 L145,15 M130,15 L130,115 M115,115 L145,115" />
+          <path class="core" pathLength="1" d="M115,15 L145,15 M130,15 L130,115 M115,115 L145,115" />
+        </g>
+        <g class="fims-glyph g3">
+          <path class="glow" pathLength="1" d="M170,115 L170,15 L205,85 L240,15 L240,115" />
+          <path class="core" pathLength="1" d="M170,115 L170,15 L205,85 L240,15 L240,115" />
+        </g>
+        <g class="fims-glyph g4">
+          <path class="glow" pathLength="1" d="M335,25 L285,25 L280,60 L330,70 L325,105 L275,105" />
+          <path class="core" pathLength="1" d="M335,25 L285,25 L280,60 L330,70 L325,105 L275,105" />
+        </g>
+      </svg>
       <div class="splash-line"></div>
       <div class="splash-tagline">INTEGRITY MONITOR</div>
     </div>
@@ -575,6 +604,7 @@
         <div class="modal-card" style="max-width: 640px;">
           <h4 id="reviewFileName">Review File</h4>
           <div id="reviewMeta" class="field-hint" style="margin-bottom: 12px;"></div>
+          <div id="reviewDiff" class="hidden"></div>
           <div id="reviewPreview" style="background: var(--bg-secondary); border-radius: 10px; padding: 12px; max-height: 320px; overflow: auto; font-family: 'Consolas', monospace; font-size: 0.82rem; white-space: pre-wrap; word-break: break-word;"></div>
           <div class="row-actions" style="margin-top: 16px; justify-content: flex-end;">
             <button id="reviewCloseBtn" class="ghost-btn">Close</button>

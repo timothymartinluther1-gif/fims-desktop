@@ -1051,6 +1051,49 @@ document.getElementById('retrieveConfirmBtn')?.addEventListener('click', async (
   showToast(`${successCount} of ${selectedIds.length} file(s) restored to ${folder}.`);
 });
 
+function diffEsc(t) {
+  return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// Wraps the changed character ranges of a line in a <mark>.
+function diffLineHtml(text, marks) {
+  let out = '';
+  let pos = 0;
+  (marks || []).forEach(([s, e]) => {
+    out += diffEsc(text.slice(pos, s)) + '<mark>' + diffEsc(text.slice(s, e)) + '</mark>';
+    pos = e;
+  });
+  return out + diffEsc(text.slice(pos));
+}
+
+// Shows exactly where a tampered file changed: removed lines in red,
+// added lines in green, with the changed characters highlighted.
+function renderChangeDiff(diff) {
+  const el = document.getElementById('reviewDiff');
+  if (!el) return;
+  if (!diff) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  let html = `<div class="diff-summary">${diffEsc(diff.summary || '')}</div>`;
+  if (diff.kind === 'text') {
+    (diff.hunks || []).forEach((h) => {
+      html += '<div class="diff-hunk">';
+      h.removed.forEach((l) => {
+        html += `<div class="diff-line diff-del"><span class="diff-num">${l.n}</span><span class="diff-sign">-</span>${diffLineHtml(l.t, l.marks)}</div>`;
+      });
+      h.added.forEach((l) => {
+        html += `<div class="diff-line diff-add"><span class="diff-num">${l.n}</span><span class="diff-sign">+</span>${diffLineHtml(l.t, l.marks)}</div>`;
+      });
+      html += '</div>';
+    });
+    if (diff.truncated) html += '<div class="diff-summary">Showing the first changes only.</div>';
+  } else if (diff.kind === 'binary') {
+    html += `<div class="diff-line diff-del"><span class="diff-sign">-</span>${diffEsc(diff.old_hex)}</div>`;
+    html += `<div class="diff-line diff-add"><span class="diff-sign">+</span>${diffEsc(diff.new_hex)}</div>`;
+    html += `<div class="diff-summary">Hex shown from byte ${diff.hex_start}. Changed byte ranges: ${diffEsc((diff.ranges || []).map((r) => r[0] + '-' + r[1]).join(', '))}</div>`;
+  }
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+}
+
 async function reviewFile(fileId) {
   try {
     const data = await apiRequest(`/api/files/${fileId}/review`, { method: 'POST' });
@@ -1062,6 +1105,8 @@ async function reviewFile(fileId) {
       Status: <strong>${data.status}</strong> · ${sizeText} · modified ${formatTime(data.modified_at)}<br>
       Current hash: <code>${(data.current_hash || '').slice(0, 24)}...</code>
     `;
+
+    renderChangeDiff(data.diff);
 
     const previewEl = document.getElementById('reviewPreview');
     previewEl.textContent = data.is_binary

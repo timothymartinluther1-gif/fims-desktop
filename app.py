@@ -896,6 +896,208 @@ def sync_remote_paired_users() -> None:
         apply_remote_actions(user_id, access_token)
 
 
+# ===== Exact-change detection =====
+# Compares the last known-good copy of a file (the same backup Reverse
+# uses) with what it is now, to say exactly WHERE it changed: line
+# numbers and the changed characters for text files, byte ranges for
+# anything else. Used by the desktop Review window and by the evidence
+# snapshots that go to the phone.
+DIFF_MAX_BYTES = 1024 * 1024
+DIFF_MAX_HUNKS = 40
+DIFF_MAX_LINES = 25
+DIFF_LINE_CHARS = 300
+
+
+def _char_marks(a: str, b: str):
+    import difflib
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    ma, mb = [], []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            continue
+        if i2 > i1:
+            ma.append([i1, i2])
+        if j2 > j1:
+            mb.append([j1, j2])
+    return ma, mb
+
+
+def compute_change_diff(old: Optional[bytes], new: Optional[bytes]) -> dict:
+    import difflib
+    if new is None:
+        return {"kind": "missing", "summary": "The file is missing, so there is nothing to compare."}
+    if old is None:
+        return {"kind": "unavailable", "summary": "No earlier copy was kept, so the exact change can't be shown."}
+    if old == new:
+        return {"kind": "same", "summary": "No difference from the trusted copy."}
+    if len(old) > DIFF_MAX_BYTES or len(new) > DIFF_MAX_BYTES:
+        return {"kind": "toolarge", "summary": "The file is too large to show line by line."}
+
+    try:
+        old_text = old.decode("utf-8")
+        new_text = new.decode("utf-8")
+        is_text = "\x00" not in old_text and "\x00" not in new_text
+    except UnicodeDecodeError:
+        is_text = False
+
+    if is_text:
+        a = old_text.splitlines()
+        b = new_text.splitlines()
+        sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        hunks = []
+        changed_lines = 0
+        truncated = False
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                continue
+            changed_lines += max(i2 - i1, j2 - j1)
+            if len(hunks) >= DIFF_MAX_HUNKS:
+                truncated = True
+                continue
+            removed = [{"n": i + 1, "t": a[i][:DIFF_LINE_CHARS], "marks": []} for i in range(i1, min(i2, i1 + DIFF_MAX_LINES))]
+            added = [{"n": j + 1, "t": b[j][:DIFF_LINE_CHARS], "marks": []} for j in range(j1, min(j2, j1 + DIFF_MAX_LINES))]
+            if tag == "replace":
+                for k in range(min(len(removed), len(added))):
+                    ma, mb = _char_marks(removed[k]["t"], added[k]["t"])
+                    removed[k]["marks"], added[k]["marks"] = ma, mb
+            if (i2 - i1) > DIFF_MAX_LINES or (j2 - j1) > DIFF_MAX_LINES:
+                truncated = True
+            hunks.append({"old_start": i1 + 1, "new_start": j1 + 1, "removed": removed, "added": added})
+        first = hunks[0]["new_start"] if hunks else 1
+        # Only trailing-newline or line-ending changes: no visible lines differ.
+        if not hunks:
+            return {"kind": "text", "hunks": [], "truncated": False,
+                    "summary": "Only line endings or the end of the file changed."}
+        return {
+            "kind": "text", "hunks": hunks, "truncated": truncated,
+            "summary": f"{changed_lines} line(s) changed, starting at line {first}.",
+        }
+
+    # Binary: report where the bytes differ.
+    ranges = []
+    start = None
+    limit = min(len(old), len(new))
+    for i in range(limit):
+        if old[i] != new[i]:
+            if start is None:
+                start = i
+        elif start is not None:
+            ranges.append([start, i])
+            start = None
+            if len(ranges) >= 10:
+                break
+    if start is not None and len(ranges) < 10:
+        ranges.append([start, limit])
+    if len(old) != len(new) and len(ranges) < 10:
+        ranges.append([limit, max(len(old), len(new))])
+    first = ranges[0][0] if ranges else 0
+    lo = max(0, first - 8)
+    return {
+        "kind": "binary", "ranges": ranges, "old_size": len(old), "new_size": len(new),
+        "first_offset": first,
+        "old_hex": old[lo:lo + 32].hex(" "), "new_hex": new[lo:lo + 32].hex(" "), "hex_start": lo,
+        "summary": f"Binary file changed. First difference at byte {first}; size {len(old)} -> {len(new)} bytes.",
+    }
+
+
+def diff_for_file(file_id, current_bytes: Optional[bytes]) -> dict:
+    try:
+        bp = backup_path_for(file_id)
+        old = bp.read_bytes() if bp.exists() else None
+    except OSError:
+        old = None
+    try:
+        return compute_change_diff(old, current_bytes)
+    except Exception as exc:
+        return {"kind": "unavailable", "summary": f"Could not work out the change: {exc}"}
+
+
+# ===== Tamper evidence snapshots =====
+# The moment a protected file is changed (or goes missing), this desktop
+# captures a snapshot of what happened - the file's contents as they are
+# right then (when small enough), both hashes, the time, and who/what was
+# logged in - encrypts it, and drops it in the account's private
+# evidence_snapshots table. A paired phone picks it up, files it in its
+# own hidden vault and deletes the cloud copy, so the evidence ends up
+# only on the phone. Nothing is sent unless a phone is paired.
+EVIDENCE_MAX_BYTES = 3 * 1024 * 1024
+evidence_pending: list = []
+evidence_last_flush = [0.0]
+
+
+def queue_evidence(user_id, file_name, event, previous_hash, new_hash, current_bytes, session, file_id=None) -> None:
+    import json as json_lib
+    diff = diff_for_file(file_id, current_bytes) if file_id is not None else {"kind": "unavailable", "summary": ""}
+    evidence_pending.append({
+        "diff_json": json_lib.dumps(diff),
+        "user_id": user_id,
+        "file_name": file_name,
+        "event": event,
+        "previous_hash": previous_hash,
+        "new_hash": new_hash,
+        "content": current_bytes if current_bytes is not None and len(current_bytes) <= EVIDENCE_MAX_BYTES else None,
+        "file_size": len(current_bytes) if current_bytes is not None else 0,
+        "captured_at": now_iso(),
+        "os_username": session.get("os_username"),
+        "hostname": session.get("hostname"),
+        "session_type": session.get("session_type"),
+        "remote_ip": session.get("remote_ip"),
+    })
+    del evidence_pending[:-25]  # never let an offline phone grow this without limit
+
+
+def flush_evidence() -> None:
+    """Sends queued snapshots for users whose phone is paired. Anything
+    that can't be sent right now stays queued for the next tick."""
+    if not evidence_pending:
+        return
+    from cryptography.fernet import Fernet
+    remaining = []
+    paired_cache: dict = {}
+    for item in evidence_pending:
+        user_id = item["user_id"]
+        try:
+            if user_id not in paired_cache:
+                token = get_valid_supabase_token(user_id)
+                pairing = get_latest_pairing(user_id, token) if token else None
+                paired_cache[user_id] = token if pairing and pairing.get("status") == "paired" else None
+            token = paired_cache[user_id]
+            if not token:
+                remaining.append(item)
+                continue
+            key = Fernet.generate_key()
+            payload = ""
+            if item["content"] is not None:
+                payload = encrypt_bytes(item["content"], key).decode("utf-8")
+            ok, _ = postgrest_request(
+                "POST", "evidence_snapshots", token,
+                prefer="return=minimal",
+                json={
+                    "user_id": user_id,
+                    "file_name": item["file_name"],
+                    "event": item["event"],
+                    "previous_hash": item["previous_hash"],
+                    "new_hash": item["new_hash"],
+                    "file_size": item["file_size"],
+                    "has_content": item["content"] is not None,
+                    "payload": payload,
+                    "diff_payload": encrypt_bytes(item["diff_json"].encode("utf-8"), key).decode("utf-8"),
+                    "snapshot_key": key.decode("utf-8"),
+                    "captured_at": item["captured_at"],
+                    "os_username": item["os_username"],
+                    "hostname": item["hostname"],
+                    "session_type": item["session_type"],
+                    "remote_ip": item["remote_ip"],
+                },
+            )
+            if not ok:
+                remaining.append(item)
+        except Exception as exc:
+            print(f"Evidence snapshot error: {exc}")
+            remaining.append(item)
+    evidence_pending[:] = remaining
+
+
 # ===== Local Network (short-range) transfer =====
 # No internet, no Supabase, zero mobile/WiFi data usage - a direct
 # connection between two devices on the same network. Instead of
@@ -1973,8 +2175,11 @@ def review_file(file_id):
 
     log_case(file_row["user_id"], file_id, file_row["name"], "reviewed")
 
+    change = diff_for_file(file_id, raw) if file_row["status"] == "tampered" else None
+
     return jsonify({
         "success": True,
+        "diff": change,
         "name": file_row["name"],
         "path": str(path),
         "status": file_row["status"],
@@ -3149,6 +3354,7 @@ def monitor_files():
                              session["os_username"], session["hostname"], session["session_type"], session["remote_ip"]),
                         )
                         newly_tampered.append(file["name"])
+                        queue_evidence(file["user_id"], file["name"], "missing", file["trusted_hash"], "FILE_MISSING", None, session, file["id"])
                         # Add to history
                         cursor.execute(
                             "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
@@ -3174,6 +3380,7 @@ def monitor_files():
                          session["os_username"], session["hostname"], session["session_type"], session["remote_ip"]),
                     )
                     newly_tampered.append(file["name"])
+                    queue_evidence(file["user_id"], file["name"], "modified", file["trusted_hash"], current_hash, current_bytes, session, file["id"])
                     # Add new hash to history
                     cursor.execute(
                         "INSERT INTO hash_history (file_id, hash_value, timestamp, change_type) VALUES (?, ?, ?, ?)",
@@ -3208,6 +3415,12 @@ def monitor_files():
 
             conn.commit()
             conn.close()
+            try:
+                if newly_tampered or time.time() - evidence_last_flush[0] > 30:
+                    evidence_last_flush[0] = time.time()
+                    flush_evidence()
+            except Exception as exc:
+                print(f"Evidence flush error: {exc}")
             if newly_tampered:
                 if len(newly_tampered) == 1:
                     notify_windows("Tamper detected", f'"{newly_tampered[0]}" was changed or went missing.')

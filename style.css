@@ -1541,46 +1541,70 @@ td code {
 }
 .pw-toggle:hover { color: var(--accent-3); }
 
-/* ===== FIMS brand screen ===== */
+/* ===== FIMS brand screen (lightning strike, italic, drawn letter by letter) ===== */
 .brand-splash {
   position: fixed; inset: 0; z-index: 5000;
   display: flex; align-items: center; justify-content: center;
   background: linear-gradient(180deg, var(--bg-primary), var(--bg-secondary));
+  overflow: hidden;
 }
 .brand-splash.hidden { display: none; }
 .splash-glow {
-  position: absolute; width: 420px; height: 420px; border-radius: 50%;
-  background: radial-gradient(circle, rgba(212, 163, 115, 0.35), rgba(212, 163, 115, 0) 70%);
+  position: absolute; width: 520px; height: 520px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(224, 179, 132, 0.40), rgba(224, 179, 132, 0) 70%);
   opacity: 0;
 }
-.splash-content { position: relative; text-align: center; }
-.splash-letters { display: flex; gap: 12px; justify-content: center; }
-.splash-letter {
-  font-size: 7rem; font-weight: 800; line-height: 1;
-  background: linear-gradient(180deg, var(--accent-1), var(--accent-3));
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  opacity: 0; transform: translateY(50px) scale(0.5);
+.splash-flash {
+  position: absolute; inset: 0; background: rgba(255, 244, 214, 0.85); opacity: 0; pointer-events: none;
 }
+.splash-bolt { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.bolt-line {
+  fill: none; stroke: #fff4d6; stroke-width: 5; stroke-linejoin: miter; stroke-linecap: round;
+  stroke-dasharray: 1; stroke-dashoffset: 1; opacity: 0;
+  filter: drop-shadow(0 0 10px #e0b384) drop-shadow(0 0 22px #e0b384);
+}
+.bolt-branch { stroke-width: 3; }
+.splash-content { position: relative; text-align: center; }
+.splash-svg { width: min(520px, 80vw); height: auto; overflow: visible; transform: skewX(-12deg); }
+.fims-glyph path { fill: none; stroke-linecap: round; stroke-linejoin: miter; stroke-dasharray: 1; stroke-dashoffset: 1; }
+.fims-glyph .glow { stroke: #e0b384; stroke-width: 22; opacity: 0.30; filter: blur(5px); }
+.fims-glyph .core { stroke: url(#fimsGold); stroke-width: 10; filter: drop-shadow(0 0 7px rgba(224, 179, 132, 0.95)); }
 .splash-line {
-  height: 3px; width: 0; margin: 14px auto 14px; border-radius: 3px;
-  background: var(--accent-1);
+  height: 3px; width: 0; margin: 16px auto 14px; border-radius: 3px; background: var(--accent-1);
+  transform: skewX(-12deg);
 }
 .splash-tagline {
-  letter-spacing: 0.45em; font-size: 0.85rem; font-weight: 600;
+  letter-spacing: 0.45em; font-size: 0.85rem; font-weight: 600; font-style: italic;
   color: var(--text-secondary); opacity: 0;
 }
-.brand-splash.play .splash-glow { animation: splashGlow 1.4s ease-out forwards; }
-.brand-splash.play .splash-letter { animation: splashPop 0.8s cubic-bezier(0.2, 1.4, 0.4, 1) forwards; }
-.brand-splash.play .splash-letter:nth-child(1) { animation-delay: 0.25s; }
-.brand-splash.play .splash-letter:nth-child(2) { animation-delay: 0.42s; }
-.brand-splash.play .splash-letter:nth-child(3) { animation-delay: 0.59s; }
-.brand-splash.play .splash-letter:nth-child(4) { animation-delay: 0.76s; }
-.brand-splash.play .splash-line { animation: splashLine 0.5s ease-out 1.05s forwards; }
-.brand-splash.play .splash-tagline { animation: splashFade 0.5s ease-out 1.3s forwards; }
-@keyframes splashPop { to { opacity: 1; transform: translateY(0) scale(1); } }
-@keyframes splashLine { to { width: 160px; } }
+
+.brand-splash.play .splash-flash { animation: splashFlash 0.45s ease-out 0.05s forwards; }
+.brand-splash.play .splash-glow { animation: splashGlowIn 1.2s ease-out 0.25s forwards; }
+.brand-splash.play .bolt-main { animation: boltStrike 0.55s ease-out 0s forwards; }
+.brand-splash.play .bolt-branch { animation: boltStrike 0.55s ease-out 0.08s forwards; }
+.brand-splash.play .g1 path { animation: glyphDraw 0.38s cubic-bezier(0.3, 0.7, 0.2, 1) 0.30s forwards; }
+.brand-splash.play .g2 path { animation: glyphDraw 0.32s cubic-bezier(0.3, 0.7, 0.2, 1) 0.62s forwards; }
+.brand-splash.play .g3 path { animation: glyphDraw 0.45s cubic-bezier(0.3, 0.7, 0.2, 1) 0.88s forwards; }
+.brand-splash.play .g4 path { animation: glyphDraw 0.42s cubic-bezier(0.3, 0.7, 0.2, 1) 1.28s forwards; }
+.brand-splash.play .splash-svg { animation: electricFlicker 0.9s linear 1.7s 1; }
+.brand-splash.play .splash-line { animation: splashLine 0.45s ease-out 1.75s forwards; }
+.brand-splash.play .splash-tagline { animation: splashFade 0.45s ease-out 1.95s forwards; }
+
+@keyframes glyphDraw { to { stroke-dashoffset: 0; } }
+@keyframes boltStrike {
+  0% { stroke-dashoffset: 1; opacity: 1; }
+  45% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes splashFlash { 0% { opacity: 0; } 18% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes splashGlowIn { to { opacity: 1; } }
+@keyframes splashLine { to { width: 170px; } }
 @keyframes splashFade { to { opacity: 1; } }
-@keyframes splashGlow { to { opacity: 1; } }
+@keyframes electricFlicker {
+  0%, 100% { opacity: 1; }
+  8% { opacity: 0.45; } 14% { opacity: 1; } 30% { opacity: 0.6; }
+  36% { opacity: 1; } 62% { opacity: 0.7; } 66% { opacity: 1; }
+}
 
 /* ===== Shimmer loading placeholders ===== */
 .skeleton-line {
@@ -1613,3 +1637,16 @@ td code {
 }
 .hello-icon { font-size: 3rem; margin-bottom: 8px; }
 .hello-card .submit-btn { width: 100%; margin-top: 16px; }
+
+
+/* ===== Exact-change view (Review window) ===== */
+#reviewDiff { margin-bottom: 12px; border: 1px solid var(--border, rgba(0,0,0,0.12)); border-radius: 10px; overflow: hidden; max-height: 260px; overflow-y: auto; font-family: 'Consolas', monospace; font-size: 0.82rem; }
+.diff-summary { padding: 8px 12px; font-family: inherit; font-weight: 600; background: var(--bg-secondary); }
+.diff-hunk { border-top: 1px solid rgba(128,128,128,0.2); }
+.diff-line { padding: 2px 12px 2px 6px; white-space: pre-wrap; word-break: break-word; }
+.diff-num { display: inline-block; min-width: 34px; margin-right: 6px; opacity: 0.55; text-align: right; }
+.diff-sign { display: inline-block; width: 14px; font-weight: 700; }
+.diff-del { background: rgba(220, 53, 69, 0.14); color: #a31d2b; }
+.diff-add { background: rgba(40, 167, 69, 0.15); color: #1b6e32; }
+.diff-del mark { background: rgba(220, 53, 69, 0.45); color: inherit; border-radius: 3px; }
+.diff-add mark { background: rgba(40, 167, 69, 0.45); color: inherit; border-radius: 3px; }
