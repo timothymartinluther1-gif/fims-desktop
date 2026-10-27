@@ -161,7 +161,7 @@ def main() -> None:
         min_size=(960, 640),
         js_api=Api(),
     )
-    webview.start(debug=True)
+    webview.start(debug=False)
 
 
 if __name__ == "__main__":
