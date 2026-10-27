@@ -15,6 +15,7 @@ a = Analysis(
         ('index.html', '.'),
         ('script.js', '.'),
         ('style.css', '.'),
+        ('assets', 'assets'),
     ],
     hiddenimports=['flask_cors', 'webview', 'requests', 'urllib3', 'idna', 'charset_normalizer', 'certifi', 'cryptography'],
     hookspath=[],
@@ -45,6 +46,6 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,           # put an .ico path here once you have one, e.g. 'app_icon.ico'
+    icon='assets/app_icon.ico',
     onefile=True,
 )

@@ -834,8 +834,10 @@ def perform_remote_review(user_id: str, file_id) -> dict:
         return {"ok": False, "message": f"Could not read the file: {exc}"}
 
     log_case(user_id, file_id, file_row["name"], "reviewed (remote)")
+    change = diff_for_file(file_id, raw) if file_row["status"] == "tampered" else None
     return {
         "ok": True,
+        "diff": change,
         "name": file_row["name"],
         "status": file_row["status"],
         "size": stat_result.st_size,

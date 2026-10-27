@@ -1051,6 +1051,19 @@ document.getElementById('retrieveConfirmBtn')?.addEventListener('click', async (
   showToast(`${successCount} of ${selectedIds.length} file(s) restored to ${folder}.`);
 });
 
+// The file's own text, with the tampered lines coloured out in place.
+function renderPreviewWithChanges(text, diff) {
+  const changed = {};
+  (diff.hunks || []).forEach((h) => (h.added || []).forEach((l) => { changed[l.n] = l.marks || []; }));
+  return text.split('\n').map((line, i) => {
+    const n = i + 1;
+    if (Object.prototype.hasOwnProperty.call(changed, n)) {
+      return `<div class="pv-line pv-changed"><span class="pv-num">${n}</span>${diffLineHtml(line, changed[n])}</div>`;
+    }
+    return `<div class="pv-line"><span class="pv-num">${n}</span>${diffEsc(line)}</div>`;
+  }).join('');
+}
+
 function diffEsc(t) {
   return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
@@ -1071,7 +1084,8 @@ function diffLineHtml(text, marks) {
 function renderChangeDiff(diff) {
   const el = document.getElementById('reviewDiff');
   if (!el) return;
-  if (!diff) { el.classList.add('hidden'); el.innerHTML = ''; return; }
+  const split = document.getElementById('reviewSplit');
+  if (!diff) { el.classList.add('hidden'); el.innerHTML = ''; if (split) split.classList.add('hidden'); return; }
   let html = `<div class="diff-summary">${diffEsc(diff.summary || '')}</div>`;
   if (diff.kind === 'text') {
     (diff.hunks || []).forEach((h) => {
@@ -1092,6 +1106,9 @@ function renderChangeDiff(diff) {
   }
   el.innerHTML = html;
   el.classList.remove('hidden');
+  el.style.height = '';
+  el.style.maxHeight = '';
+  if (split) split.classList.remove('hidden');
 }
 
 async function reviewFile(fileId) {
@@ -1109,9 +1126,13 @@ async function reviewFile(fileId) {
     renderChangeDiff(data.diff);
 
     const previewEl = document.getElementById('reviewPreview');
-    previewEl.textContent = data.is_binary
-      ? '(Binary file, no text preview available. Metadata above is still accurate.)'
-      : data.preview || '(File is empty.)';
+    if (data.is_binary) {
+      previewEl.textContent = '(Binary file, no text preview available. Metadata above is still accurate.)';
+    } else if (data.preview && data.diff && data.diff.kind === 'text' && (data.diff.hunks || []).length) {
+      previewEl.innerHTML = renderPreviewWithChanges(data.preview, data.diff);
+    } else {
+      previewEl.textContent = data.preview || '(File is empty.)';
+    }
 
     document.getElementById('reviewModalOverlay').classList.remove('hidden');
   } catch (error) {
@@ -2081,3 +2102,38 @@ console.log('👤 Admin email:', ADMIN_EMAIL);
 window.simulateChange = simulateChange;
 window.deleteFile = deleteFile;
 window.resolveAlert = resolveAlert;
+
+// Drag the bar between "Where it changed" and the file preview to give
+// either one more room. Double-click the bar to put it back.
+(function () {
+  const split = document.getElementById('reviewSplit');
+  const diffEl = document.getElementById('reviewDiff');
+  const card = document.querySelector('.review-card');
+  if (!split || !diffEl || !card) return;
+  let startY = 0;
+  let startH = 0;
+  let active = false;
+
+  split.addEventListener('pointerdown', (e) => {
+    active = true;
+    startY = e.clientY;
+    startH = diffEl.getBoundingClientRect().height;
+    diffEl.style.maxHeight = 'none';
+    split.classList.add('dragging');
+    split.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  split.addEventListener('pointermove', (e) => {
+    if (!active) return;
+    const room = Math.max(120, card.clientHeight - 230);
+    const h = Math.min(room, Math.max(50, startH + (e.clientY - startY)));
+    diffEl.style.height = h + 'px';
+  });
+  const stop = () => { active = false; split.classList.remove('dragging'); };
+  split.addEventListener('pointerup', stop);
+  split.addEventListener('pointercancel', stop);
+  split.addEventListener('dblclick', () => {
+    diffEl.style.height = '';
+    diffEl.style.maxHeight = '';
+  });
+})();

@@ -1660,3 +1660,68 @@ td code {
 .review-head h4 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .review-x { background: none; border: none; font-size: 1.8rem; line-height: 1; cursor: pointer; color: var(--text-secondary, inherit); padding: 0 6px; border-radius: 8px; }
 .review-x:hover { background: var(--bg-secondary); }
+
+
+/* ===== Splash: make the lightning clearly visible in LIGHT mode ===== */
+.brand-splash .gs1 { stop-color: #ffd36e; }
+.brand-splash .gs2 { stop-color: #f0a232; }
+.brand-splash .gs3 { stop-color: #b0661a; }
+.bolt-line {
+  stroke: #ffb52e; stroke-width: 6;
+  filter: drop-shadow(0 0 4px #ff8c00) drop-shadow(0 0 14px rgba(255, 140, 0, 0.85)) drop-shadow(0 0 30px rgba(255, 170, 60, 0.7));
+}
+.bolt-branch { stroke-width: 3.5; }
+.splash-flash { background: radial-gradient(circle at 55% 40%, rgba(255, 205, 100, 0.95), rgba(255, 190, 80, 0.55) 60%, rgba(255, 190, 80, 0.25)); }
+.splash-glow { width: 600px; height: 600px; background: radial-gradient(circle, rgba(255, 168, 50, 0.55), rgba(255, 168, 50, 0) 68%); }
+.fims-glyph .glow { stroke: #f5a030; opacity: 0.45; filter: blur(6px); }
+.fims-glyph .core { filter: drop-shadow(0 0 8px rgba(255, 150, 20, 0.9)) drop-shadow(0 1px 1px rgba(120, 60, 0, 0.45)); }
+
+/* Dark mode keeps the original soft, pale lightning */
+[data-theme="dark"] .brand-splash .gs1 { stop-color: #ffe9b8; }
+[data-theme="dark"] .brand-splash .gs2 { stop-color: #e0b384; }
+[data-theme="dark"] .brand-splash .gs3 { stop-color: #b88b5e; }
+[data-theme="dark"] .bolt-line {
+  stroke: #fff4d6; stroke-width: 5;
+  filter: drop-shadow(0 0 10px #e0b384) drop-shadow(0 0 22px #e0b384);
+}
+[data-theme="dark"] .bolt-branch { stroke-width: 3; }
+[data-theme="dark"] .splash-flash { background: rgba(255, 244, 214, 0.85); }
+[data-theme="dark"] .splash-glow { width: 520px; height: 520px; background: radial-gradient(circle, rgba(224, 179, 132, 0.40), rgba(224, 179, 132, 0) 70%); }
+[data-theme="dark"] .fims-glyph .glow { stroke: #e0b384; opacity: 0.30; filter: blur(5px); }
+[data-theme="dark"] .fims-glyph .core { filter: drop-shadow(0 0 7px rgba(224, 179, 132, 0.95)); }
+
+
+/* ===== Draggable divider between "where it changed" and the file preview ===== */
+.review-split { flex: 0 0 auto; height: 16px; margin: 2px 0; cursor: row-resize; display: flex; align-items: center; justify-content: center; touch-action: none; user-select: none; }
+.review-split.hidden { display: none; }
+.review-split span { width: 64px; height: 6px; border-radius: 6px; background: var(--border-medium, #d5cec2); transition: background 0.15s; }
+.review-split:hover span, .review-split.dragging span { background: var(--accent-1); }
+#reviewDiff { flex: 0 0 auto; }
+
+
+/* ===== Review preview: tampered lines coloured out in place ===== */
+#reviewPreview .pv-line { white-space: pre-wrap; word-break: break-word; padding: 1px 6px 1px 0; min-height: 1.2em; }
+#reviewPreview .pv-num { display: inline-block; min-width: 34px; margin-right: 8px; text-align: right; opacity: 0.45; }
+#reviewPreview .pv-changed { background: rgba(220, 53, 69, 0.16); color: #a31d2b; border-radius: 4px; }
+#reviewPreview .pv-changed mark { background: rgba(220, 53, 69, 0.4); color: inherit; border-radius: 3px; font-weight: 700; }
+[data-theme="dark"] #reviewPreview .pv-changed { color: #ff9a9a; background: rgba(255, 120, 120, 0.16); }
+
+/* Dark mode: keep the changed words readable in the "where it changed" box */
+[data-theme="dark"] .diff-del { color: #ff9a9a; }
+[data-theme="dark"] .diff-add { color: #8fe39f; }
+[data-theme="dark"] .diff-add mark { background: rgba(80, 200, 110, 0.38); color: #eaffee; }
+[data-theme="dark"] .diff-del mark { background: rgba(255, 110, 110, 0.4); color: #fff0f0; }
+
+
+/* ===== FIMS logo (light and dark versions) ===== */
+.logo-img { display: block; height: 100%; width: auto; max-width: 100%; object-fit: contain; }
+.logo-dark { display: none; }
+[data-theme="dark"] .logo-light { display: none; }
+[data-theme="dark"] .logo-dark { display: block; }
+.brand-logo { background: none !important; box-shadow: none !important; border-radius: 0 !important; width: auto !important; min-width: 56px; height: 44px !important; }
+.brand-small .brand-logo { height: 36px !important; min-width: 48px; }
+.home-brand-icon { background: none !important; box-shadow: none !important; width: auto !important; height: 84px !important; margin-bottom: 12px; display: block !important; }
+.brand-logo .logo-img { height: 44px; width: auto; max-width: none; }
+.brand-small .brand-logo .logo-img { height: 36px; }
+.home-brand-icon .logo-img { height: 84px; width: auto; }
+.brand-logo { flex: 0 0 auto; }

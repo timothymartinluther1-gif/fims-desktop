@@ -16,6 +16,7 @@
   })();
 </script>
 <link rel="stylesheet" href="/style.css" />
+<link rel="icon" type="image/png" href="/assets/favicon-48.png" />
 </head>
 <body>
 <button id="themeToggleBtn" class="theme-toggle-btn" title="Toggle dark/light mode" aria-label="Toggle dark/light mode">🌙</button>
@@ -25,7 +26,7 @@
   <section id="homePanel" class="home-panel">
     <div class="home-shell">
       <div class="home-hero">
-        <div class="home-brand-icon">🔐</div>
+        <div class="home-brand-icon"><img class="logo-img logo-light" src="/assets/logo_full_light.png" alt="FIMS, File Integrity Monitoring System" /><img class="logo-img logo-dark" src="/assets/logo_full_dark.png" alt="FIMS, File Integrity Monitoring System" /></div>
         <p class="eyebrow">File Integrity Monitor</p>
         <h1>Know the instant a file changes.</h1>
         <div class="home-text">
@@ -76,9 +77,9 @@
       <svg class="splash-svg" viewBox="0 0 360 130" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <linearGradient id="fimsGold" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0" stop-color="#ffe9b8" />
-            <stop offset="0.5" stop-color="#e0b384" />
-            <stop offset="1" stop-color="#b88b5e" />
+            <stop class="gs1" offset="0" stop-color="#ffe9b8" />
+            <stop class="gs2" offset="0.5" stop-color="#e0b384" />
+            <stop class="gs3" offset="1" stop-color="#b88b5e" />
           </linearGradient>
         </defs>
         <g class="fims-glyph g1">
@@ -119,7 +120,7 @@
     <div class="auth-card">
       <button id="backHomeBtn" class="back-home-btn">&larr; Back</button>
       <div class="brand">
-        <div class="brand-logo">🔐</div>
+        <div class="brand-logo"><img class="logo-img logo-light" src="/assets/logo_mark_light.png" alt="FIMS" /><img class="logo-img logo-dark" src="/assets/logo_mark_dark.png" alt="FIMS" /></div>
         <div>
           <strong>Integrity Monitor</strong>
           <div class="brand-small">Secure file tracking</div>
@@ -211,7 +212,7 @@
     <div class="top-bar">
       <div class="brand">
         <button id="sidebarToggleBtn" class="hamburger-btn" aria-label="Toggle navigation">☰</button>
-        <div class="brand-logo">🔐</div>
+        <div class="brand-logo"><img class="logo-img logo-light" src="/assets/logo_mark_light.png" alt="FIMS" /><img class="logo-img logo-dark" src="/assets/logo_mark_dark.png" alt="FIMS" /></div>
         <div>
           <strong>Integrity Monitor</strong>
           <h3 id="greetingText">Welcome back</h3>
@@ -608,6 +609,7 @@
           </div>
           <div id="reviewMeta" class="field-hint" style="margin-bottom: 12px;"></div>
           <div id="reviewDiff" class="hidden"></div>
+          <div id="reviewSplit" class="review-split hidden" title="Drag up or down to resize. Double-click to reset."><span></span></div>
           <div id="reviewPreview" style="background: var(--bg-secondary); border-radius: 10px; padding: 12px; max-height: 320px; overflow: auto; font-family: 'Consolas', monospace; font-size: 0.82rem; white-space: pre-wrap; word-break: break-word;"></div>
           <div class="row-actions" style="margin-top: 16px; justify-content: flex-end;">
             <button id="reviewCloseBtn" class="ghost-btn">Close</button>
