@@ -1120,8 +1120,17 @@ async function reviewFile(fileId) {
   }
 }
 
-document.getElementById('reviewCloseBtn')?.addEventListener('click', () => {
+function closeReview() {
   document.getElementById('reviewModalOverlay').classList.add('hidden');
+}
+document.getElementById('reviewCloseBtn')?.addEventListener('click', closeReview);
+document.getElementById('reviewCloseX')?.addEventListener('click', closeReview);
+// Clicking the dark area outside the card, or pressing Esc, also closes it.
+document.getElementById('reviewModalOverlay')?.addEventListener('click', (e) => {
+  if (e.target.id === 'reviewModalOverlay') closeReview();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeReview();
 });
 
 let cachedCases = [];

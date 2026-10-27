@@ -1650,3 +1650,13 @@ td code {
 .diff-add { background: rgba(40, 167, 69, 0.15); color: #1b6e32; }
 .diff-del mark { background: rgba(220, 53, 69, 0.45); color: inherit; border-radius: 3px; }
 .diff-add mark { background: rgba(40, 167, 69, 0.45); color: inherit; border-radius: 3px; }
+
+
+/* ===== Review window: always keep the Close buttons reachable ===== */
+.review-card { max-height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+.review-card #reviewPreview { flex: 1 1 auto; min-height: 60px; }
+.review-card .row-actions { flex: 0 0 auto; }
+.review-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.review-head h4 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-x { background: none; border: none; font-size: 1.8rem; line-height: 1; cursor: pointer; color: var(--text-secondary, inherit); padding: 0 6px; border-radius: 8px; }
+.review-x:hover { background: var(--bg-secondary); }

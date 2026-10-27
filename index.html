@@ -601,8 +601,11 @@
 
       <!-- Review a file's current content/metadata without leaving the app -->
       <div id="reviewModalOverlay" class="modal-overlay hidden">
-        <div class="modal-card" style="max-width: 640px;">
-          <h4 id="reviewFileName">Review File</h4>
+        <div class="modal-card review-card" style="max-width: 640px;">
+          <div class="review-head">
+            <h4 id="reviewFileName">Review File</h4>
+            <button id="reviewCloseX" class="review-x" type="button" aria-label="Close review" title="Close">&times;</button>
+          </div>
           <div id="reviewMeta" class="field-hint" style="margin-bottom: 12px;"></div>
           <div id="reviewDiff" class="hidden"></div>
           <div id="reviewPreview" style="background: var(--bg-secondary); border-radius: 10px; padding: 12px; max-height: 320px; overflow: auto; font-family: 'Consolas', monospace; font-size: 0.82rem; white-space: pre-wrap; word-break: break-word;"></div>
