@@ -443,13 +443,14 @@
                 <p class="field-hint" style="margin-top: 8px;">Sending: switch on your WiFi and join the receiver's hotspot (or the same WiFi network), then enter the details shown on their screen.</p>
               </div>
               <div class="path-row" style="margin: 12px 0;">
-                <input type="text" id="transferFilePathInput" placeholder="Choose a file..." readonly />
+                <input type="text" id="transferFilePathInput" placeholder="Choose one or more files..." readonly />
                 <button type="button" id="browseTransferFileBtn" class="ghost-btn">Browse…</button>
               </div>
+              <p id="transferFileList" class="field-hint hidden" style="margin: -4px 0 10px; word-break: break-word;"></p>
               <label class="field-hint" style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
                 <input type="checkbox" id="compressTransferInput" /> Compress before sending
               </label>
-              <button type="submit" class="submit-btn">Send File</button>
+              <button type="submit" class="submit-btn">Send</button>
             </form>
           </div>
 

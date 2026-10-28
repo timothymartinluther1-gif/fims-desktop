@@ -103,6 +103,16 @@ class Api:
             return None
         return result[0]
 
+    def pick_files(self):
+        """Like pick_file, but lets the user tick several files at once."""
+        try:
+            result = webview.windows[0].create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True)
+        except Exception:
+            return None
+        if not result:
+            return None
+        return list(result)
+
     def pick_save_location(self, default_name=""):
         """Used when restoring a cloud backup - lets the user choose where
         to save the recovered file."""

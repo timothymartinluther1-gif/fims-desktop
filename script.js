@@ -1248,13 +1248,40 @@ document.getElementById('copyCodeBtn')?.addEventListener('click', () => {
   showToast('Code copied.');
 });
 
+let transferFiles = [];
+
+function describeTransferFiles() {
+  const input = document.getElementById('transferFilePathInput');
+  if (!input) return;
+  if (!transferFiles.length) {
+    input.value = '';
+  } else if (transferFiles.length === 1) {
+    input.value = transferFiles[0];
+  } else {
+    input.value = `${transferFiles.length} files selected`;
+  }
+  const listEl = document.getElementById('transferFileList');
+  if (listEl) {
+    if (transferFiles.length > 1) {
+      listEl.textContent = transferFiles.map((p) => p.split(/[\\/]/).pop()).join(', ');
+      listEl.classList.remove('hidden');
+    } else {
+      listEl.textContent = '';
+      listEl.classList.add('hidden');
+    }
+  }
+}
+
 document.getElementById('browseTransferFileBtn')?.addEventListener('click', async () => {
   if (!window.pywebview || !window.pywebview.api) {
     showToast('File picking requires the desktop app window.', 'error');
     return;
   }
-  const filePath = await window.pywebview.api.pick_file();
-  if (filePath) document.getElementById('transferFilePathInput').value = filePath;
+  const picked = await window.pywebview.api.pick_files();
+  if (picked && picked.length) {
+    transferFiles = picked;
+    describeTransferFiles();
+  }
 });
 
 let transferRange = 'long';
@@ -1277,65 +1304,97 @@ document.getElementById('rangeShortBtn')?.addEventListener('click', () => {
 
 document.getElementById('sendTransferForm')?.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const filePath = document.getElementById('transferFilePathInput').value;
+  const files = transferFiles.slice();
   const compress = document.getElementById('compressTransferInput').checked;
 
-  if (!filePath) {
+  if (!files.length) {
     showToast('Choose a file first.', 'error');
     return;
   }
 
-  let progress;
-  try {
-    let response;
-    if (transferRange === 'long') {
-      const receiverCode = document.getElementById('receiverCodeInput').value.trim();
-      if (!receiverCode) {
-        showToast("Enter the receiver's code.", 'error');
-        return;
-      }
-      progress = showProgressToast('Encrypting and sending...');
-      response = await apiRequest('/api/transfer/send', {
-        method: 'POST',
-        body: JSON.stringify({
-          user_id: state.currentUser.id,
-          sender_name: state.currentUser.name,
-          file_path: filePath,
-          receiver_code: receiverCode,
-          compress,
-        }),
-      });
-      await refreshSentTransfers();
-    } else {
-      const receiverIp = document.getElementById('receiverIpInput').value.trim();
-      const receiverPort = document.getElementById('receiverPortInput').value.trim();
-      const receiverPin = document.getElementById('receiverPinInput').value.trim();
-      if (!receiverIp || !receiverPort || !receiverPin) {
-        showToast("Enter the receiver's IP, port, and PIN.", 'error');
-        return;
-      }
-      progress = showProgressToast('Encrypting and sending over local network...');
-      response = await apiRequest('/api/lan/send', {
-        method: 'POST',
-        body: JSON.stringify({
-          user_id: state.currentUser.id,
-          sender_name: state.currentUser.name,
-          file_path: filePath,
-          receiver_ip: receiverIp,
-          receiver_port: receiverPort,
-          pin: receiverPin,
-          compress,
-        }),
-      });
+  let receiverCode = '';
+  let receiverIp = '';
+  let receiverPort = '';
+  let receiverPin = '';
+  if (transferRange === 'long') {
+    receiverCode = document.getElementById('receiverCodeInput').value.trim();
+    if (!receiverCode) {
+      showToast("Enter the receiver's code.", 'error');
+      return;
     }
-    progress.close();
-    showToast(response.message || 'Sent.');
+  } else {
+    receiverIp = document.getElementById('receiverIpInput').value.trim();
+    receiverPort = document.getElementById('receiverPortInput').value.trim();
+    receiverPin = document.getElementById('receiverPinInput').value.trim();
+    if (!receiverIp || !receiverPort || !receiverPin) {
+      showToast("Enter the receiver's IP, port, and PIN.", 'error');
+      return;
+    }
+  }
+
+  let progress;
+  let sentCount = 0;
+  let lastMessage = '';
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const name = files[i].split(/[\\/]/).pop();
+      const label = files.length > 1 ? `Sending ${i + 1} of ${files.length}: ${name}` : 'Encrypting and sending...';
+      progress = showProgressToast(label);
+      let response;
+      if (transferRange === 'long') {
+        response = await apiRequest('/api/transfer/send', {
+          method: 'POST',
+          body: JSON.stringify({
+            user_id: state.currentUser.id,
+            sender_name: state.currentUser.name,
+            file_path: files[i],
+            receiver_code: receiverCode,
+            compress,
+          }),
+        });
+      } else {
+        // The receiver approves one file at a time, so wait and try again
+        // while it is still busy with the previous one.
+        let attempts = 0;
+        while (true) {
+          try {
+            response = await apiRequest('/api/lan/send', {
+              method: 'POST',
+              body: JSON.stringify({
+                user_id: state.currentUser.id,
+                sender_name: state.currentUser.name,
+                file_path: files[i],
+                receiver_ip: receiverIp,
+                receiver_port: receiverPort,
+                pin: receiverPin,
+                compress,
+              }),
+            });
+            break;
+          } catch (err) {
+            const busy = /busy/i.test(err.message || '');
+            if (!busy || attempts >= 60) throw err;
+            attempts += 1;
+            await new Promise((r) => setTimeout(r, 2000));
+          }
+        }
+      }
+      progress.close();
+      progress = null;
+      sentCount += 1;
+      lastMessage = response.message || 'Sent.';
+    }
+    showToast(files.length > 1 ? `${sentCount} files sent.` : lastMessage);
+    if (transferRange === 'long') await refreshSentTransfers();
     document.getElementById('sendTransferForm').reset();
-    document.getElementById('transferFilePathInput').value = '';
+    transferFiles = [];
+    describeTransferFiles();
   } catch (error) {
     if (progress) progress.close();
     console.error('Send failed:', error);
-    showToast(error.message || 'Could not send file', 'error');
+    if (transferRange === 'long') await refreshSentTransfers();
+    const prefix = sentCount > 0 ? `${sentCount} of ${files.length} sent. ` : '';
+    showToast(prefix + (error.message || 'Could not send file'), 'error');
   }
 });
 
@@ -1427,7 +1486,11 @@ async function refreshIncomingTransfers() {
       listEl.innerHTML = '<li class="empty-state">No incoming requests</li>';
       return;
     }
-    listEl.innerHTML = transfers.map((t) => `
+    const acceptAllHtml = transfers.length > 1
+      ? `<li><button class="ghost-btn" style="padding: 6px 14px; font-size: 0.85rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="acceptAllTransfers()">Accept all ${transfers.length} into one folder</button></li>`
+      : '';
+    window.__incomingTransfers = transfers;
+    listEl.innerHTML = acceptAllHtml + transfers.map((t) => `
       <li>
         <div class="row-actions" style="justify-content: space-between;">
           <div>
@@ -1479,6 +1542,46 @@ async function rejectTransfer(transferId) {
     console.error('Reject failed:', error);
     showToast(error.message || 'Could not reject transfer', 'error');
   }
+}
+
+async function acceptAllTransfers() {
+  const list = (window.__incomingTransfers || []).slice();
+  if (!list.length) return;
+  const confirmed = await requestPasswordConfirmation();
+  if (!confirmed) return;
+  const verifyHash = confirm('Verify file integrity for every file?\n\nOK = verify (recommended)\nCancel = accept without verifying');
+  if (!window.pywebview || !window.pywebview.api) {
+    showToast('File saving requires the desktop app window.', 'error');
+    return;
+  }
+  const folder = await window.pywebview.api.pick_folder();
+  if (!folder) return;
+  const sep = folder.includes('\\') ? '\\' : '/';
+  let saved = 0;
+  let failed = 0;
+  let progress;
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i];
+    const safeName = String(t.file_name || 'received_file').replace(/[\\/:*?"<>|]/g, '_');
+    try {
+      progress = showProgressToast(`Receiving ${i + 1} of ${list.length}: ${safeName}`);
+      await apiRequest('/api/transfer/accept', {
+        method: 'POST',
+        body: JSON.stringify({
+          user_id: state.currentUser.id,
+          transfer_id: t.id,
+          destination_path: folder.replace(/[\\/]+$/, '') + sep + safeName,
+          verify_hash: verifyHash,
+        }),
+      });
+      saved += 1;
+    } catch (error) {
+      failed += 1;
+    }
+    if (progress) { progress.close(); progress = null; }
+  }
+  showToast(failed ? `${saved} saved, ${failed} failed.` : `${saved} files saved.`, failed ? 'error' : undefined);
+  await refreshIncomingTransfers();
 }
 
 async function acceptTransfer(transferId, fileName) {

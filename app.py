@@ -495,6 +495,25 @@ def is_subscription_active(user_id: str, email: str = None) -> bool:
         return False
 
 
+
+_ALREADY_COMPRESSED = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".3gp", ".mp3", ".aac", ".m4a", ".ogg",
+                       ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".zip", ".rar", ".7z", ".gz", ".pdf",
+                       ".docx", ".xlsx", ".pptx", ".apk"}
+
+
+def should_compress(path, wanted):
+    """Compressing a video, photo or archive saves nothing and only adds a
+    zip wrapper, so those are always sent as they are."""
+    return bool(wanted) and Path(path).suffix.lower() not in _ALREADY_COMPRESSED
+
+
+def received_name(name, compressed):
+    """A compressed transfer is named 'file.ext.zip' while its content is
+    unwrapped on arrival, so the saved file must lose that extra '.zip'."""
+    if compressed and str(name).lower().endswith(".zip"):
+        return str(name)[:-4]
+    return name
+
 # ===== Secure File Transfer System =====
 
 def postgrest_request(method: str, table: str, access_token: str, **kwargs) -> tuple[bool, Any]:
@@ -1156,10 +1175,14 @@ def lan_receive():
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "No file included."}), 400
 
+    if lan_state.get("incoming"):
+        return jsonify({"success": False, "message": "Receiver is busy approving the previous file."}), 409
+
     encrypted_bytes = request.files['file'].read()
+    is_compressed = request.form.get('compressed') == 'true'
     lan_state["incoming"] = {
         "sender_name": request.form.get('sender_name', 'Unknown'),
-        "file_name": request.form.get('file_name', 'file'),
+        "file_name": received_name(request.form.get('file_name', 'file'), is_compressed),
         "trusted_hash": request.form.get('trusted_hash'),
         "transfer_key": request.form.get('transfer_key'),
         "compressed": request.form.get('compressed') == 'true',
@@ -1167,7 +1190,8 @@ def lan_receive():
         "encrypted_bytes": encrypted_bytes,
         "received_at": now_iso(),
     }
-    lan_state["active"] = False  # one transfer per receiving session, keeps the open window short
+    # Stays open so several files can arrive one after another; the user ends
+    # the session with Stop Receiving. Each file still needs the PIN and an Accept.
 
     return jsonify({"success": True, "message": "Delivered. Waiting for the receiver to approve it."})
 
@@ -2322,6 +2346,7 @@ def transfer_send():
     file_name = path.name
     payload = original_bytes
 
+    compress = should_compress(path, compress)
     if compress:
         import io
         import zipfile
@@ -2388,6 +2413,8 @@ def transfer_incoming():
     if not ok:
         return jsonify({"success": False, "message": "Could not load incoming transfers."}), 400
 
+    for row in rows or []:
+        row["file_name"] = received_name(row.get("file_name", ""), row.get("compressed"))
     return jsonify({"success": True, "transfers": rows or []})
 
 
@@ -2650,6 +2677,7 @@ def lan_send():
     file_name = path.name
     payload = original_bytes
 
+    compress = should_compress(path, compress)
     if compress:
         import io
         import zipfile
