@@ -600,6 +600,19 @@
         </div>
       </div>
 
+      <!-- Admin-approved update notice -->
+      <div id="updateModalOverlay" class="modal-overlay hidden">
+        <div class="modal-card" style="max-width: 440px;">
+          <h4 id="updateTitle">Update available</h4>
+          <p id="updateText" class="field-hint" style="margin: 8px 0 12px; white-space: pre-wrap;"></p>
+          <p class="field-hint">Download the new file, close this app, then run the new file. Your account and files stay as they are.</p>
+          <div class="row-actions" style="margin-top: 16px; justify-content: flex-end;">
+            <button id="updateLaterBtn" class="ghost-btn">Later</button>
+            <button id="updateNowBtn" class="submit-btn">Download update</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Review a file's current content/metadata without leaving the app -->
       <div id="reviewModalOverlay" class="modal-overlay hidden">
         <div class="modal-card review-card" style="max-width: 640px;">

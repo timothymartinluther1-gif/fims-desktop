@@ -2137,3 +2137,36 @@ window.resolveAlert = resolveAlert;
     diffEl.style.maxHeight = '';
   });
 })();
+
+
+// ===== Admin-approved update notice =====
+// Asks the backend whether the admin has approved a newer version. Nothing
+// shows until they have. "Later" hides it for this session unless the update is required.
+let updateDismissed = false;
+async function checkForUpdate() {
+  try {
+    const res = await fetch('/api/update/check');
+    const data = await res.json();
+    const overlay = document.getElementById('updateModalOverlay');
+    if (!overlay || !data.available) return;
+    if (updateDismissed && !data.required) return;
+    document.getElementById('updateTitle').textContent = data.required ? 'Update required' : 'Update available';
+    document.getElementById('updateText').textContent =
+      'A new version of FIMS is ready' + (data.version_name ? ' (' + data.version_name + ')' : '') + '.' +
+      (data.notes ? '\n\n' + data.notes : '');
+    const later = document.getElementById('updateLaterBtn');
+    later.classList.toggle('hidden', !!data.required);
+    later.onclick = () => { updateDismissed = true; overlay.classList.add('hidden'); };
+    document.getElementById('updateNowBtn').onclick = () => {
+      fetch('/api/update/open', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: data.url }),
+      });
+    };
+    overlay.classList.remove('hidden');
+  } catch (e) {
+    // Offline or backend busy: just try again next time.
+  }
+}
+setTimeout(checkForUpdate, 4000);
+setInterval(checkForUpdate, 6 * 60 * 60 * 1000);

@@ -53,3 +53,37 @@ jobs:
           files: dist/IntegrityMonitor.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # A copy of this exact build is kept under its own version number, so the
+      # update the admin approves always points to the file that was approved,
+      # even after newer builds replace "latest".
+      - name: Name this build
+        shell: pwsh
+        run: Copy-Item dist/IntegrityMonitor.exe "dist/IntegrityMonitor-v${{ github.run_number }}.exe"
+
+      - name: Keep this build as its own release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-v${{ github.run_number }}
+          name: Windows build ${{ github.run_number }}
+          body: Build ${{ github.run_number }}. Offered to users only after the admin approves it.
+          make_latest: 'false'
+          files: dist/IntegrityMonitor-v${{ github.run_number }}.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Adds the build to the approval list. It stays hidden from users until the
+      # admin ticks "approved" in Supabase (Table Editor, app_releases).
+      - name: Add to the approval list
+        shell: bash
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_SERVICE_KEY" ]; then echo "No SUPABASE_SERVICE_ROLE_KEY secret, skipping."; exit 0; fi
+          curl -sS -X POST "https://goqdtnudjcomwvqbwidt.supabase.co/rest/v1/app_releases?on_conflict=platform,version_code" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: resolution=ignore-duplicates,return=minimal" \
+            -d "{\"platform\":\"windows\",\"version_code\":${{ github.run_number }},\"version_name\":\"1.0.${{ github.run_number }}\",\"download_url\":\"https://github.com/${{ github.repository }}/releases/download/windows-v${{ github.run_number }}/IntegrityMonitor-v${{ github.run_number }}.exe\",\"approved\":false,\"required\":false}"
+

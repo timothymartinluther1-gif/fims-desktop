@@ -7,6 +7,13 @@
 # user's AppData folder (see app_data_dir() in app.py) so they survive
 # even though the bundle itself is extracted fresh to a temp dir each run.
 
+# Stamp this build's number (from GitHub Actions) into the app, so it knows
+# which version it is when it asks whether an approved update exists.
+import os, pathlib
+pathlib.Path(SPECPATH, 'app_version.py').write_text(
+    'VERSION_CODE = %d\n' % int(os.environ.get('GITHUB_RUN_NUMBER', '0') or 0), encoding='utf-8'
+)
+
 a = Analysis(
     ['desktop_app.py'],
     pathex=[],
@@ -17,7 +24,7 @@ a = Analysis(
         ('style.css', '.'),
         ('assets', 'assets'),
     ],
-    hiddenimports=['flask_cors', 'webview', 'requests', 'urllib3', 'idna', 'charset_normalizer', 'certifi', 'cryptography'],
+    hiddenimports=['app_version', 'flask_cors', 'webview', 'requests', 'urllib3', 'idna', 'charset_normalizer', 'certifi', 'cryptography'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

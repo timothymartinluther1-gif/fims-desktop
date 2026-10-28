@@ -6,3 +6,4 @@ build/
 local_secrets.py
 integrity_monitor.db
 integrity_monitor.db-journal
+app_version.py

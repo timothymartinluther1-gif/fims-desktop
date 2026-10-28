@@ -2730,6 +2730,66 @@ def hello_verify():
     return jsonify({"success": False, "verified": False, "message": friendly}), 401
 
 
+# ===== Admin-approved updates =====
+# The build number is stamped in at build time (see desktop_app.spec). A
+# newer version only shows up here once the admin has ticked "approved"
+# for it in Supabase, so the admin controls when users are asked to update.
+try:
+    from app_version import VERSION_CODE as APP_VERSION_CODE
+except ImportError:
+    APP_VERSION_CODE = 0  # running from source: never prompts
+
+
+def check_for_approved_update() -> dict:
+    if APP_VERSION_CODE <= 0:
+        return {"available": False}
+    try:
+        resp = requests.get(
+            f"{SUPABASE_URL}/rest/v1/app_releases",
+            params={
+                "platform": "eq.windows",
+                "approved": "eq.true",
+                "order": "version_code.desc",
+                "limit": "1",
+                "select": "version_code,version_name,notes,required,download_url",
+            },
+            headers={"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"},
+            timeout=8,
+        )
+        rows = resp.json() if resp.ok and resp.content else []
+        if not rows:
+            return {"available": False}
+        row = rows[0]
+        if int(row.get("version_code", 0)) <= APP_VERSION_CODE or not row.get("download_url"):
+            return {"available": False}
+        return {
+            "available": True,
+            "version_name": row.get("version_name") or "",
+            "notes": row.get("notes") or "",
+            "required": bool(row.get("required")),
+            "url": row["download_url"],
+        }
+    except Exception:
+        return {"available": False}
+
+
+@app.route('/api/update/check', methods=['GET'])
+def update_check():
+    return jsonify({"success": True, **check_for_approved_update()})
+
+
+@app.route('/api/update/open', methods=['POST'])
+def update_open():
+    """Opens the approved download link in the normal browser. Only links
+    to this project's own GitHub releases are allowed."""
+    import webbrowser
+    url = (request.get_json(silent=True) or {}).get("url", "")
+    if not url.startswith("https://github.com/timothymartinluther1-gif/"):
+        return jsonify({"success": False, "message": "Not an allowed link."}), 400
+    webbrowser.open(url)
+    return jsonify({"success": True})
+
+
 @app.route('/api/pairing/status', methods=['GET'])
 def pairing_status():
     user_id = request.args.get('user_id')
