@@ -554,6 +554,14 @@
 
         <!-- ===== ADMIN VIEW ===== -->
         <div class="dashboard-view" data-view="admin">
+          <div class="table-panel">
+            <div class="table-header"><h4>App updates</h4></div>
+            <p class="field-hint" style="margin-bottom: 12px;">
+              Every new build appears here as "Waiting". Nobody sees an update until you approve it with your password.
+              Approving applies to everyone on that platform (phone or Windows).
+            </p>
+            <ul id="adminReleaseList" class="user-list"></ul>
+          </div>
           <div class="table-panel user-panel">
             <div class="table-header"><h4>All Users (Admin)</h4></div>
             <p class="field-hint">
@@ -568,6 +576,28 @@
       </div>
     </div>
   </section>
+
+      <!-- Admin: approve or withdraw an update -->
+      <div id="approveModalOverlay" class="modal-overlay hidden">
+        <div class="modal-card">
+          <h4 id="approveTitle">Approve update</h4>
+          <p class="field-hint" id="approveInfo" style="margin-bottom: 12px;"></p>
+          <div class="field-group" id="approveExtra">
+            <label for="approveNotes">What's new (optional, users will see this)</label>
+            <input type="text" id="approveNotes" maxlength="300" placeholder="Fixes and improvements" />
+            <label class="field-hint" style="display: flex; align-items: center; gap: 8px; margin-top: 8px;">
+              <input type="checkbox" id="approveRequired" /> Required (users cannot skip this update)
+            </label>
+          </div>
+          <div class="field-group" style="margin-top: 8px;">
+            <input type="password" id="approvePassword" placeholder="Your password" autocomplete="current-password" />
+          </div>
+          <div class="row-actions" style="margin-top: 12px; justify-content: flex-end;">
+            <button id="approveCancelBtn" class="ghost-btn">Cancel</button>
+            <button id="approveSubmitBtn" class="submit-btn" style="width: auto; padding: 10px 20px;">Confirm</button>
+          </div>
+        </div>
+      </div>
 
       <!-- Password re-confirmation, required before any file retrieval -->
       <div id="passwordConfirmOverlay" class="modal-overlay hidden">

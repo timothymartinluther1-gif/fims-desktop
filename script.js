@@ -90,6 +90,7 @@ function loadState() {
       state.currentUser = JSON.parse(storedUser);
     } catch (e) {
       state.currentUser = null;
+      state.isAdmin = undefined;
     }
   }
 }
@@ -498,6 +499,7 @@ function switchDashboardView(viewName) {
   });
   if (viewName === 'cases') refreshCasesList();
   if (viewName === 'transfers') refreshTransfersView();
+  if (viewName === 'admin') refreshAdminReleases();
   if (viewName === 'remote') refreshRemotePanel();
 }
 
@@ -1112,6 +1114,8 @@ function renderChangeDiff(diff) {
 }
 
 async function reviewFile(fileId) {
+  const confirmedReview = await requestPasswordConfirmation();
+  if (!confirmedReview) return;
   try {
     const data = await apiRequest(`/api/files/${fileId}/review`, { method: 'POST' });
 
@@ -1638,7 +1642,10 @@ function renderDashboard() {
   // Show/hide the admin nav item based on admin status
   const adminNavBtn = document.getElementById('adminNavBtn');
   if (adminNavBtn) {
-    adminNavBtn.classList.toggle('hidden', !isAdminUser());
+    adminNavBtn.classList.toggle('hidden', state.isAdmin !== true);
+  }
+  if (state.isAdmin === undefined && state.currentUser && !state.adminChecking) {
+    loadAdminStatus();
   }
   if (userPanel) {
     userPanel.classList.remove('hidden');
@@ -2054,6 +2061,7 @@ if (backHomeBtn) {
 // Logout
 logoutBtn.addEventListener('click', () => {
   state.currentUser = null;
+  state.isAdmin = undefined;
   saveState();
   showHome();
   showToast('Logged out');
@@ -2131,6 +2139,7 @@ document.getElementById('helloUnlockBtn')?.addEventListener('click', tryHelloUnl
 document.getElementById('helloUsePasswordBtn')?.addEventListener('click', () => {
   document.getElementById('helloGate').classList.add('hidden');
   state.currentUser = null;
+  state.isAdmin = undefined;
   saveState();
   localStorage.removeItem(HELLO_KEY);
   showHome();
@@ -2273,3 +2282,104 @@ async function checkForUpdate() {
 }
 setTimeout(checkForUpdate, 4000);
 setInterval(checkForUpdate, 6 * 60 * 60 * 1000);
+
+// ===== Admin: approve updates =====
+async function loadAdminStatus() {
+  state.adminChecking = true;
+  try {
+    const data = await apiRequest(`/api/admin/status?user_id=${state.currentUser.id}`);
+    state.isAdmin = !!data.is_admin;
+  } catch (e) {
+    state.isAdmin = false;
+  }
+  state.adminChecking = false;
+  const btn = document.getElementById('adminNavBtn');
+  if (btn) btn.classList.toggle('hidden', state.isAdmin !== true);
+}
+
+function adminEsc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function refreshAdminReleases() {
+  const listEl = document.getElementById('adminReleaseList');
+  if (!listEl) return;
+  listEl.innerHTML = '<li class="empty-state">Loading...</li>';
+  try {
+    const data = await apiRequest(`/api/admin/releases?user_id=${state.currentUser.id}`);
+    const rows = data.releases || [];
+    window.__adminReleases = rows;
+    if (!rows.length) {
+      listEl.innerHTML = '<li class="empty-state">No builds yet. They appear here after each successful build.</li>';
+      return;
+    }
+    listEl.innerHTML = rows.map((r) => `
+      <li>
+        <div class="row-actions" style="justify-content: space-between;">
+          <div>
+            <strong style="color: var(--text);">${r.platform === 'android' ? '📱 Phone' : '🖥️ Windows'} · ${adminEsc(r.version_name || ('build ' + r.version_code))}</strong>
+            <div style="color: var(--muted); font-size: 0.78rem;">
+              ${r.approved ? '✅ Approved' : '⏳ Waiting'}${r.required ? ' · Required' : ''} · ${formatTime(r.created_at)}
+              ${r.notes ? '<br>' + adminEsc(r.notes) : ''}
+            </div>
+          </div>
+          <div class="row-actions">
+            ${r.approved
+              ? `<button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="adminSetRelease('${r.id}', false)">Withdraw</button>`
+              : `<button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="adminSetRelease('${r.id}', true)">Approve</button>`}
+          </div>
+        </div>
+      </li>
+    `).join('');
+  } catch (error) {
+    listEl.innerHTML = '<li class="empty-state">Could not load builds.</li>';
+  }
+}
+
+function adminSetRelease(releaseId, approve) {
+  const rel = (window.__adminReleases || []).find((r) => String(r.id) === String(releaseId));
+  if (!rel) return;
+  const overlay = document.getElementById('approveModalOverlay');
+  const pw = document.getElementById('approvePassword');
+  const notes = document.getElementById('approveNotes');
+  const req = document.getElementById('approveRequired');
+  document.getElementById('approveTitle').textContent = approve ? 'Approve this update' : 'Withdraw this update';
+  document.getElementById('approveInfo').textContent =
+    (rel.platform === 'android' ? 'Phone' : 'Windows') + ' · ' + (rel.version_name || ('build ' + rel.version_code)) +
+    (approve ? '. Everyone on this platform will be offered it.' : '. It will stop being offered.');
+  document.getElementById('approveExtra').classList.toggle('hidden', !approve);
+  notes.value = rel.notes || '';
+  req.checked = !!rel.required;
+  pw.value = '';
+  overlay.classList.remove('hidden');
+  pw.focus();
+
+  const submit = document.getElementById('approveSubmitBtn');
+  const cancel = document.getElementById('approveCancelBtn');
+  function close() {
+    overlay.classList.add('hidden');
+    submit.onclick = null;
+    cancel.onclick = null;
+  }
+  cancel.onclick = close;
+  submit.onclick = async () => {
+    if (!pw.value) { showToast('Enter your password.', 'error'); return; }
+    try {
+      const body = {
+        user_id: state.currentUser.id,
+        email: state.currentUser.email,
+        password: pw.value,
+        release_id: rel.id,
+        approved: approve,
+      };
+      if (approve) { body.notes = notes.value; body.required = req.checked; }
+      const res = await apiRequest('/api/admin/release/set', { method: 'POST', body: JSON.stringify(body) });
+      pw.value = '';
+      close();
+      showToast(res.message || 'Done.');
+      refreshAdminReleases();
+    } catch (error) {
+      showToast(error.message || 'Could not change this update.', 'error');
+    }
+  };
+}

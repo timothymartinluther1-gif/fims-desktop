@@ -2818,6 +2818,78 @@ def update_open():
     return jsonify({"success": True})
 
 
+# ===== Admin: approve updates =====
+# Who counts as an admin is decided by the database (the app_admins table),
+# not by this app. Approving needs the admin's password again: the password
+# is checked by signing in, and the change is made with that fresh sign-in,
+# so Supabase itself refuses anyone who is not on the admin list.
+
+@app.route('/api/admin/status', methods=['GET'])
+def admin_status():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": True, "is_admin": False})
+    ok, rows = postgrest_request(
+        "GET", "app_admins", access_token,
+        params={"user_id": f"eq.{user_id}", "select": "user_id"},
+    )
+    return jsonify({"success": True, "is_admin": bool(ok and rows)})
+
+
+@app.route('/api/admin/releases', methods=['GET'])
+def admin_releases():
+    user_id = request.args.get('user_id')
+    if not user_id:
+        return jsonify({"success": False, "message": "user_id is required."}), 400
+    access_token = get_valid_supabase_token(user_id)
+    if not access_token:
+        return jsonify({"success": False, "message": "Session expired. Please log out and back in."}), 401
+    ok, rows = postgrest_request(
+        "GET", "app_releases", access_token,
+        params={
+            "select": "id,platform,version_code,version_name,notes,required,approved,created_at,download_url",
+            "order": "created_at.desc",
+            "limit": "30",
+        },
+    )
+    if not ok:
+        return jsonify({"success": False, "message": "Could not load releases."}), 400
+    return jsonify({"success": True, "releases": rows or []})
+
+
+@app.route('/api/admin/release/set', methods=['POST'])
+def admin_release_set():
+    data = request.get_json(silent=True) or {}
+    user_id = data.get('user_id')
+    email = (data.get('email') or '').strip()
+    password = data.get('password') or ''
+    release_id = data.get('release_id')
+    if not user_id or not email or not password or not release_id:
+        return jsonify({"success": False, "message": "Enter your password to continue."}), 400
+
+    ok, body = supabase_login(email, password)
+    if not ok or (body.get("user") or {}).get("id") != user_id:
+        return jsonify({"success": False, "message": "That password isn't right."}), 403
+    fresh_token = body.get("access_token")
+
+    patch = {"approved": bool(data.get('approved'))}
+    if 'required' in data:
+        patch["required"] = bool(data.get('required'))
+    if 'notes' in data:
+        patch["notes"] = str(data.get('notes') or '')[:500]
+
+    ok2, result = postgrest_request(
+        "PATCH", "app_releases", fresh_token,
+        params={"id": f"eq.{release_id}"}, json=patch,
+    )
+    if not ok2 or not result:
+        return jsonify({"success": False, "message": "Only the admin account can approve updates."}), 403
+    return jsonify({"success": True, "message": "Approved. Devices will be offered this update." if patch["approved"] else "Withdrawn. Devices will no longer be offered it."})
+
+
 @app.route('/api/pairing/status', methods=['GET'])
 def pairing_status():
     user_id = request.args.get('user_id')
