@@ -2324,6 +2324,7 @@ async function refreshAdminReleases() {
             </div>
           </div>
           <div class="row-actions">
+            ${r.download_url && r.platform === 'windows' ? `<button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem;" onclick="adminTestRelease('${r.id}')">Test it</button>` : ''}
             ${r.approved
               ? `<button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(255, 93, 115, 0.1); color: #ffb2bf;" onclick="adminSetRelease('${r.id}', false)">Withdraw</button>`
               : `<button class="ghost-btn" style="padding: 4px 12px; font-size: 0.8rem; background: rgba(31, 190, 128, 0.1); color: var(--success);" onclick="adminSetRelease('${r.id}', true)">Approve</button>`}
@@ -2334,6 +2335,16 @@ async function refreshAdminReleases() {
   } catch (error) {
     listEl.innerHTML = '<li class="empty-state">Could not load builds.</li>';
   }
+}
+
+function adminTestRelease(releaseId) {
+  const rel = (window.__adminReleases || []).find((r) => String(r.id) === String(releaseId));
+  if (!rel || !rel.download_url) return;
+  fetch('/api/update/open', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: rel.download_url }),
+  });
+  showToast('Opening the download. Close this app, then run the new file to test it.');
 }
 
 function adminSetRelease(releaseId, approve) {
