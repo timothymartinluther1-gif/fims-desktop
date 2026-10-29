@@ -80,7 +80,7 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
           if [ -z "$SUPABASE_SERVICE_KEY" ]; then echo "No SUPABASE_SERVICE_ROLE_KEY secret, skipping."; exit 0; fi
-          curl -sS -X POST "https://goqdtnudjcomwvqbwidt.supabase.co/rest/v1/app_releases?on_conflict=platform,version_code" \
+          curl -sS --fail-with-body -X POST "https://goqdtnudjcomwvqbwidt.supabase.co/rest/v1/app_releases?on_conflict=platform,version_code" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
             -H "Content-Type: application/json" \
